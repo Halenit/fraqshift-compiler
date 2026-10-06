@@ -1,6 +1,3 @@
-
-
-
 @echo off
 :dev_loop
 cls
