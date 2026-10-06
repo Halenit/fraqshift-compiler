@@ -1,0 +1,16 @@
+; ===================================================
+; FRAQSHIFT - INTERACTIVE KEYBOARD TEST
+; ===================================================
+
+data.string "Press the A key to continue..."
+sys.out
+
+; Create a machine-level loop to wait for the 'A' key
+.keyboard_wait:
+sys.read_key        ; Reads key press into the stack
+sys.cmp 0x1E        ; Compares with the scancode for 'A'
+sys.if_eq
+    data.string "You pressed A! The system is moving forward."
+    sys.out
+sys.if_done
+
