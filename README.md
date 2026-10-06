@@ -2,67 +2,75 @@
 
 [![License: GPL v3](https://shields.io)](https://gnu.org)
 
-Fraqshift is a high-performance, low-level systems programming language engineered to combine modern data syntax with bare-metal hardware control. It compiles code directly into native x86-64 machine instructions without any external linker dependencies.
+Fraqshift is a high-performance, low-level systems programming language engineered to combine modern data syntax with bare-metal hardware control. It compiles code directly into native x86-64 machine instructions for a custom, standalone Operating System ecosystem.
 
-##    The Vision: Self-Hosting
+## The Vision: Self-Hosting
 
-Fraqshift is currently in its **bootstrap phase**. The compiler is temporarily written in Python (`fraq_builder.py`) to build the initial language infrastructure. 
+Fraqshift is currently in its **bootstrap phase**. The compiler is temporarily written in Python (`builder2.py`) to build the initial language infrastructure. 
 
-The ultimate goal of this project is to achieve **complete self-hosting**—meaning the final Fraqshift compiler will be written entirely in Fraqshift itself, completely removing the dependency on Python, C, or C++.
+The ultimate goal of this project is to achieve **complete self-hosting**—meaning the final Fraqshift compiler will be written entirely in Fraqshift itself, running inside its own bare-metal OS and completely removing dependencies on Python, C, Windows, or Linux.
 
-##    Key Features
+## Key Features
 
-* **Zero-Dependency Binaries:** Generates standalone executable files directly via custom binary structure injection.
-* **Direct Hardware Control:** Multi-target compiler built to support both desktop applications and direct bare-metal hardware interfacing.
+* **Pure Bare-Metal Kernel Execution:** Generates flat binary files that boot directly on x86-64 hardware without an underlying OS layer.
+* **Silicon-Level Control:** Multi-target architecture built to interface directly with VGA video buffers (`0xB8000`) and PS/2 keyboard hardware ports.
 * **Inline `matrix_asm`:** Native support for 64-bit Assembly instructions and high-speed memory streaming.
+* **NASM Compilation Pipeline:** Leverages the industry-standard Netwide Assembler (NASM) for zero-dependency hardware binaries.
 
-##    Language Syntax (`main.fraq`)
+## Language Syntax (`main.fraq`)
 
 Fraqshift uses clean data definitions paired with immediate hardware execution tokens:
 
-```text
-; --- High-level stream mapping ---
-var kisel = 200
-var motor = 58
+```
+; ===================================================
+; FRAQSHIFT OS - BARE-METAL NASM CORE HARDWARE TEST
+; ===================================================
 
-data.var kisel
-sys.sub 100       ; 200 - 100 = 100
+; 1. Initialize and secure data on the stack
+var base_value = 50
 
-data.var motor
-sys.add 42        ; 58 + 42 = 100
+; 2. Execute arithmetic directly in the CPU (50 * 2 = 100)
+data.var base_value
+sys.mul 2
 
-; Combine and print the result
-sys.add 100       ; 100 + 100 = 200
-sys.print_int     ; Prints 200 to the screen
+; 3. Core hardware decision engine test
+sys.cmp 100
+sys.if_eq
+    data.string "FRAQSHIFT OS: Silicon decision engine is online via NASM!"
+    sys.out
+sys.if_done
+
+; 4. Sequential flow control (Add 42 to stack and stream to VGA)
+data.var base_value
+sys.add 42
+sys.print_int
 ```
 
-##   Getting Started & Compiling
+## Getting Started & Compiling
 
 ### Prerequisites
-The current bootstrap compiler requires Python 3 and the `keystone-engine` library.
+The bootstrap compiler requires Python 3, **NASM (Netwide Assembler)** placed locally in the project directory, and **QEMU** installed to emulate the hardware sandbox.
+
+### Compilation & Execution Pipeline
+Instead of running manual commands, the build chain is fully automated via an interactive development loop:
 
 ```bash
-pip install keystone-engine
+.\build_and_run.bat
 ```
 
-### Compilation Pipeline
-1. Create your source code file named `main.fraq`.
-2. Run the compiler script to generate a native executable:
+The automated script handles the entire lifecycle:
+1. **Python Translation:** `builder2.py` maps variables and compiles `.fraq` streams into clean x86-64 Assembly text (`kernel.asm`).
+2. **Hardware Assembly:** `nasm.exe` packages the assembly into a flat binary file (`fraqshift_kernel.bin`) injected with a magic boot sector signature (`0xAA55`).
+3. **Sandbox Booting:** Launches QEMU to execute your native code inside an isolated hardware sandbox.
 
-```bash
-python fraq_builder.py --target windows
-```
+## Project Roadmap
 
-The compiler will automatically clean comments, handle stack-frame alignment, map variables, and output a fully executable binary.
-
-##    Project Roadmap
-
-- [x] **Phase 1-3:** Bootstrap compiler infrastructure, binary PE injection, and variable stack allocation.
-- [x] **Phase 4-5:** Hardware decision engine (If-satser) and PS/2 keyboard polling drivers.
-- [ ] **Phase 6 (Next):** Implement loop blocks (`sys.loop`) for repetitive execution.
+- [x] **Phase 1-3:** Bootstrap compiler infrastructure, variable stack allocation, and bare-metal output.
+- [x] **Phase 4-5:** Hardware decision engine (`sys.if_eq`), VGA text-streaming, local NASM pipeline, and 64-bit Long Mode initialization trampoline.
+- [ ] **Phase 6 (Next):** Implement hardware loop blocks (`sys.loop`) for repetitive execution and stream scanning.
 - [ ] **Phase 7:** Dynamic variable reassignment and memory pointers (Arrays).
-- [ ] **Phase 8:** Self-hosting transition—writing the compiler inside Fraqshift.
+- [ ] **Phase 8:** Self-hosting transition—writing the compiler inside Fraqshift OS.
 
-##    License
+## License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
