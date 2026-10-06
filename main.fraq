@@ -1,16 +1,23 @@
 ; ===================================================
-; FRAQSHIFT - INTERACTIVE KEYBOARD TEST
+; FRAQSHIFT OS - BARE-METAL NASM CORE HARDWARE TEST
 ; ===================================================
 
-data.string "Press the A key to continue..."
-sys.out
+; 1. INITIALIZE AND SECURE DATA ON THE STACK
+var base_value = 50
 
-; Create a machine-level loop to wait for the 'A' key
-.keyboard_wait:
-sys.read_key        ; Reads key press into the stack
-sys.cmp 0x1E        ; Compares with the scancode for 'A'
+; 2. EXECUTE ARITHMETIC DIRECTLY IN THE CPU (50 * 2 = 100)
+data.var base_value
+sys.mul 2
+
+; 3. CORE HARDWARE DECISION ENGINE TEST (Is value exactly 100?)
+sys.cmp 100
 sys.if_eq
-    data.string "You pressed A! The system is moving forward."
+    ; This block runs ONLY if the hardware calculation matches perfectly!
+    data.string "FRAQSHIFT OS: Silicon decision engine is online via NASM!"
     sys.out
 sys.if_done
 
+; 4. SEQUENTIAL FLOW CONTROL (Add 42 to stack and stream to VGA)
+data.var base_value
+sys.add 42
+sys.print_int
