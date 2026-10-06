@@ -3,7 +3,6 @@
 cls
 echo =========================================================
 echo Copyright (C) 2026  Daniel Halen
-echo.
 echo This program is free software: you can redistribute it and/or modify
 echo it under the terms of the GNU General Public License as published by
 echo the Free Software Foundation, either version 3 of the License, or
