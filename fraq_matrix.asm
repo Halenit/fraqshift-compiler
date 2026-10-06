@@ -1,3 +1,11 @@
+
+; === Copyright (C) 2026  Daniel Halen ===
+
+; === This program is free software: you can redistribute it and/or modify ===
+; === it under the terms of the GNU General Public License as published by ===
+; === the Free Software Foundation, either version 3 of the License, or ===
+; === (at your option) any later version. ===
+
 ; === FRAQSHIFT 64-BIT INSTRUCTION ENGINE: OP_LOAD_MATRIX (0xD0) ===
 
 cmp al, 0xD0                    ; Is the command FRAQSHIFT_OP_LOAD_MATRIX?
