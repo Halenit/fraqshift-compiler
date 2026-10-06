@@ -1,0 +1,17 @@
+# --- Fraqshift Compiler Ignored Files ---
+
+# Ignorera färdiga kompilerade binärer och exekverbara filer
+*.exe
+*.bin
+*.obj
+
+# Ignorera Pythons interna cacheskräp (så källkodsrepot förblir rent)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignorera lokala loggfiler eller tillfälliga filer från textredigerare
+.vscode/
+*.log
+*.tmp
