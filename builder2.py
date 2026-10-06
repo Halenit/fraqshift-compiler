@@ -1,3 +1,10 @@
+# =========================================================
+# Copyright (C) 2026  Daniel Halen
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# =========================================================
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 import os
 import sys
