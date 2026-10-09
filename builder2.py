@@ -1,15 +1,28 @@
 # =========================================================
-# Copyright (C) 2026 Daniel Halen
+# Copyright (C) 2026  Daniel Halen
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 # =========================================================
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 import os
 import sys
 
-print("--- FRAQSHIFT OS CORE COMPILER V6.0 (NASM ENGINE) ---")
+print("--- FRAQSHIFT OS CORE COMPILER V6.2 (TWO-STAGE NASM ENGINE) ---")
 
 source_file = "main.fraq"
 if not os.path.exists(source_file):
@@ -24,57 +37,102 @@ compiled_assembly = ""
 strings_data = []
 current_string_index = 0
 
-# Symbol table for tracking named variables on the hardware stack
+# Symbol tables and tracking stacks for flow control
 symbol_table = {}
 stack_offset = 0  # Each new 64-bit variable takes 8 bytes of space
+
 if_counter = 0
 if_stack = []
 
-# --- INITIAL BOILERPLATE (Setting up pure x86-64 NASM environment) ---
-compiled_assembly += """BITS 16                     ; CPU starts in 16-bit Real Mode after BIOS
-org 0x7C00                  ; Standard MBR bootloader entry address
+loop_counter = 0
+loop_stack = []
 
-start_boot:
-    cli                     ; Disable interrupts during hardware switch
+clear_counter = 0  # Track unique clear loops to prevent NASM definition errors
+
+# --- STAGE 1 BOOTLOADER: Read Kernel from disk & Switch to 64-bit ---
+compiled_assembly += """BITS 16
+org 0x7C00                  ; MBR entry address
+
+start_bootloader:
     xor ax, ax
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov sp, 0x7C00          ; Set up temporary safe real-mode stack
+    mov sp, 0x7C00          ; Set up secure stack below bootloader
 
-    ; --- Enable PAE and Page Tables for 64-bit Mode ---
-    mov eax, 10100000b      ; Enable PAE (bit 5) and PGE (bit 7)
-    mov cr4, eax
+    ; --- Load Stage 2 Kernel from Hard Disk ---
+    mov ah, 0x02            ; BIOS Read Sectors function
+    mov al, 15              ; Load 15 sectors (7.5 KB of code space)
+    mov ch, 0               ; Cylinder 0
+    mov cl, 2               ; Start reading from sector 2 (right after MBR)
+    mov dh, 0               ; Head 0
+    mov bx, 0x7E00          ; Read kernel directly into memory right after bootloader
+    int 0x13                ; Call BIOS disk service
+    jc .disk_error          ; If carry flag set, disk read failed
 
-    ; --- Set up minimalist 64-bit Page Tables at a safe address ---
-    mov edi, 0x1000         ; Page directory table base address
-    mov cr3, edi            ; Point CR3 to entry page table
+    cli                     ; Disable interrupts for hardware switch
+
+    ; --- Set up 64-bit Page Tables at a safe address (0x9000) ---
+    mov edi, 0x9000
+    mov cr3, edi
     xor eax, eax
     mov ecx, 4096
-    rep stosd               ; Zero out memory space for page tables
+    rep stosd
     
-    ; Identity map the first 2 megabytes of hardware RAM
-    mov dword [0x1000], 0x2003  ; PML4 points to PDPT
-    mov dword [0x2000], 0x3003  ; PDPT points to PDT
-    mov dword [0x3000], 0x0083  ; PDT entry maps first 2MB page directly
+    mov dword [0x9000], 0xA003
+    mov dword [0xA000], 0xB003
+    mov dword [0xB000], 0x0083  ; Identity map first 2MB
 
-    ; --- Enable Long Mode in EFER (Extended Feature Enable Register) ---
-    mov ecx, 0xC0000080     ; EFER MSR register ID
+    ; --- Enable PAE ---
+    mov eax, 10100000b
+    mov cr4, eax
+
+    ; --- Enable Long Mode ---
+    mov ecx, 0xC0000080
     rdmsr
-    or eax, 0x00000100      ; Set LME (Long Mode Enable bit 8)
+    or eax, 0x00000100
     wrmsr
 
-    ; --- Enable Paging and enter 32-bit Compatibility / 64-bit Long Mode ---
+    ; --- Enable Paging and Protected Mode ---
     mov eax, cr0
-    or eax, 0x80000001      ; Enable Paging (PG bit 31) and Protected Mode (PE bit 0)
+    or eax, 0x80000001
     mov cr0, eax
 
-    ; --- Load a minimalist 64-bit Global Descriptor Table (GDT) ---
+    ; --- Load GDT and jump to 64-bit Stage 2 Kernel ---
     lgdt [gdt_ptr]
-    jmp 0x08:.entry_64      ; Patched: Clean hardware jump to 64-bit mode
+    jmp 0x08:stage2_kernel
 
-BITS 64                     ; PROCESSOR IS NOW IN PURE 64-BIT LONG MODE!
-.entry_64:
+.disk_error:
+    mov ah, 0x0E
+    mov al, 'E'
+    int 0x10                ; Print 'E' to show hardware disk failure
+.halt_loader:
+    hlt
+    jmp .halt_loader
+
+; --- MINIMALIST 64-BIT GLOBAL DESCRIPTOR TABLE (GDT) ---
+align 8
+gdt_start:
+    dq 0x0000000000000000   ; Null Descriptor
+gdt_code:
+    dq 0x00209A0000000000   ; 64-bit Code Descriptor
+gdt_data:
+    dq 0x0000920000000000   ; 64-bit Data Descriptor
+gdt_end:
+
+gdt_ptr:
+    dw gdt_end - gdt_start - 1
+    dq gdt_start
+
+times 510-($-$$) db 0       ; Pad Stage 1 to exactly 510 bytes
+dw 0xAA55                   ; MBR Boot Signature for Sector 1
+
+; ==============================================================================
+; STAGE 2 KERNEL: Executed in pure 64-bit Long Mode (Frigjord från 512 bytes!)
+; ==============================================================================
+BITS 64
+
+stage2_kernel:
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -83,200 +141,108 @@ BITS 64                     ; PROCESSOR IS NOW IN PURE 64-BIT LONG MODE!
     mov ss, ax
 
 kernel_main:
-    push rbp                    ; Save previous base pointer
-    mov rbp, rsp                ; Set up memory anchor for local variables
+    push rbp
+    mov rbp, rsp
 """
-
-
 
 # --- PARSER LOOP ---
 for line_num, line in enumerate(lines, 1):
     line = line.strip()
-    
-    # Ignore empty lines and comments completely
     if not line or line.startswith(";"):
         continue
         
-    # --- STRING HANDLING (`data.string`) ---
     if line.startswith("data.string"):
         try:
             parts = line.split('"')
             raw_text = parts[1]
-            
-            # Save string text to be appended at the end of the ASM file
             strings_data.append((current_string_index, raw_text))
             current_string_index += 1
         except IndexError:
             print(f"Syntax Error on line {line_num}: Missing quotes in data.string!")
             exit()
             
-    # --- STRING OUTPUT DIRECT TO VGA (`sys.out`) ---
     elif line == "sys.out":
         if not strings_data:
             print(f"Error on line {line_num}: sys.out called before data.string!")
             exit()
-            
         idx, text = strings_data[-1]
         length = len(text.encode('utf-8'))
-        
-        # Clean, native NASM instructions using relative addressing (rel)
         compiled_assembly += f"""
-        lea rsi, [rel msg_{idx}] ; Load text address safely via NASM RIP-relative
-        mov rdi, 0xB8000        ; RDI = VGA text-buffer base address
-        mov rcx, {length}         ; Character count to print
+        lea rsi, [rel msg_{idx}]
+        mov rdi, 0xB8000
+        mov rcx, {length}
     .vga_string_loop_{idx}:
-        lodsb                   ; Load byte from RSI into AL, increment RSI
-        mov [rdi], al           ; Write character directly to VGA video memory
-        mov byte [rdi+1], 0x07  ; Standard color attribute (Light gray on black)
-        add rdi, 2              ; Move VGA screen pointer 2 bytes forward
+        lodsb
+        mov [rdi], al
+        mov byte [rdi+1], 0x07
+        add rdi, 2
         loop .vga_string_loop_{idx}
         """
 
-    # --- DECLARE NAMED VARIABLE (`var x = 5`) ---
     elif line.startswith("var "):
         try:
-            parts = line.split()
+            # Safe parsing regardless of token lengths or whitespace anomalies
+            parts = [p for p in line.split() if p]
             var_name = parts[1]
-            if parts[2] != "=":
-                raise ValueError
-            var_value = int(parts[3])
+            
+            # Find the position of the '=' token dynamically
+            eq_idx = parts.index("=")
+            var_value = int(parts[eq_idx + 1])
             
             if var_name in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Variable '{var_name}' is already declared!")
+                print(f"SECURITY ERROR on line {line_num}: Variable '{var_name}' already declared!")
                 exit()
-                
             stack_offset += 8
             symbol_table[var_name] = stack_offset
-            
             compiled_assembly += f"""
-            mov rax, {var_value}        ; Load literal value to CPU register
-            mov [rbp - {stack_offset}], rax ; Save to unique isolated hardware stack slot
+            mov rax, {var_value}
+            mov [rbp - {stack_offset}], rax
             """
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: Invalid variable declaration! Format: var x = 5")
+            print(f"Syntax Error on line {line_num}: Invalid variable declaration!")
             exit()
 
-    # --- LOAD VARIABLE TO CALCULATION STACK (`data.var x`) ---
     elif line.startswith("data.var"):
         try:
-            parts = line.split()
+            parts = [p for p in line.split() if p]
             var_name = parts[1]
-            
             if var_name not in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Variable '{var_name}' is not declared!")
+                print(f"SECURITY ERROR on line {line_num}: Variable '{var_name}' not declared!")
                 exit()
-                
             offset = symbol_table[var_name]
             compiled_assembly += f"""
-            mov rax, [rbp - {offset}] ; Fetch value from safe hardware memory location
-            push rax                ; Push onto calculation stack for execution
+            mov rax, [rbp - {offset}]
+            push rax
             """
         except IndexError:
-            print(f"Syntax Error on line {line_num}: You must specify a variable name!")
+            print(f"Syntax Error on line {line_num}: Missing variable name!")
             exit()
 
-    # --- PUSH DIRECT INTEGER (`data.int 10`) ---
     elif line.startswith("data.int"):
         try:
-            parts = line.split()
+            parts = [p for p in line.split() if p]
             value = int(parts[1])
             compiled_assembly += f"""
             mov rax, {value}
             push rax
             """
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'data.int' requires a valid integer!")
+            print(f"Syntax Error on line {line_num}: 'data.int' requires an integer!")
             exit()
 
-    # --- ARITHMETIC OPERATIONS (STACK-BASED) ---
-    elif line.startswith("sys.add"):
-        try:
-            parts = line.split()
-            value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax                 ; Fetch latest value from stack
-            add rax, {value}        ; Execute addition directly in CPU
-            push rax                ; Save back onto calculation stack
-            """
-        except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.add' requires an integer!")
-            exit()
-
-    elif line.startswith("sys.sub"):
-        try:
-            parts = line.split()
-            value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax
-            sub rax, {value}
-            push rax
-            """
-        except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.sub' requires an integer!")
-            exit()
-
-    elif line.startswith("sys.mul"):
-        try:
-            parts = line.split()
-            value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax
-            mov rbx, {value}
-            imul rax, rbx           ; Signed multiplication
-            push rax
-            """
-        except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.mul' requires an integer!")
-            exit()
-
-    elif line.startswith("sys.div"):
-        try:
-            parts = line.split()
-            value = int(parts[1])
-            if value == 0:
-                print(f"SECURITY ERROR on line {line_num}: Division by 0 is forbidden on silicon level!")
-                exit()
-            compiled_assembly += f"""
-            pop rax
-            mov rbx, {value}
-            xor rdx, rdx            ; Clear RDX for division hardware safety
-            idiv rbx                ; Divide RAX by RBX, quotient stored in RAX
-            push rax
-            """
-        except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.div' requires an integer!")
-            exit()
-
-    # --- HARDWARE DECISION ENGINE (IF STATEMENTS) ---
-    elif line.startswith("sys.cmp"):
-        try:
-            parts = line.split()
-            value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax                 ; Fetch last result from stack
-            cmp rax, {value}        ; Compare register with value (Sets CPU flags)
-            """
-        except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.cmp' requires a valid integer!")
-            exit()
-
-    elif line == "sys.if_eq":
-        if_counter += 1
-        if_stack.append(if_counter)
-        compiled_assembly += f"""
-        jne .if_end_{if_counter}   ; Jump if Not Equal directly to end of block
+    # --- FLUSH KEYBOARD BUFFER (`sys.flush_key`) ---
+    elif line == "sys.flush_key":
+        compiled_assembly += """
+    .flush_loop:
+        in al, 0x64             ; Read PS/2 status register
+        test al, 0x01           ; Check if data is present in buffer (bit 0)
+        jz .flush_done          ; If bit 0 is empty, buffer is cleared!
+        in al, 0x60             ; Data present? Read and drop it to clear port
+        jmp .flush_loop         ; Keep looping until buffer is perfectly empty
+    .flush_done:
         """
 
-    elif line == "sys.if_done":
-        if not if_stack:
-            print(f"SECURITY ERROR on line {line_num}: 'sys.if_done' found without a matching if statement!")
-            exit()
-        current_if = if_stack.pop()
-        compiled_assembly += f"""
-        .if_end_{current_if}:
-        """
-
-    # --- PS/2 KEYBOARD INTERFACE ---
+    # --- PS/2 KEYBOARD INTERFACE (`sys.read_key`) ---
     elif line == "sys.read_key":
         compiled_assembly += """
     .wait_for_key:
@@ -289,93 +255,190 @@ for line_num, line in enumerate(lines, 1):
         push rax                ; Save scancode securely on calculation stack
         """
 
-        # --- VGA CHARACTER AND INTEGER OUTPUT ---
+    # --- VGA SCREEN REFRESH (`sys.clear`) ---
+    elif line == "sys.clear":
+        clear_counter += 1
+        compiled_assembly += f"""
+        mov rdi, 0xB8000        ; Base address of VGA text buffer
+        mov rcx, 2000           ; A standard terminal screen has 80x25 = 2000 character cells
+        mov ax, 0x0720          ; 0x20 = ASCII space character, 0x07 = Light gray attribute
+    .vga_clear_loop_{clear_counter}:
+        mov [rdi], ax           ; Clear current screen cell
+        add rdi, 2              ; Move to next cell pointer
+        loop .vga_clear_loop_{clear_counter}
+        """
+
+        # --- ARITHMETIC OPERATIONS (STACK-BASED) ---
+    elif line.startswith("sys.add"):
+        try:
+            parts = [p for p in line.split() if p]
+            value = int(parts[1])
+            compiled_assembly += f"""
+            pop rax
+            add rax, {value}
+            push rax
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: 'sys.add' requires an integer!")
+            exit()
+
+    elif line.startswith("sys.sub"):
+        try:
+            parts = [p for p in line.split() if p]
+            value = int(parts[1])
+            compiled_assembly += f"""
+            pop rax
+            sub rax, {value}
+            push rax
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: 'sys.sub' requires an integer!")
+            exit()
+
+    elif line.startswith("sys.mul"):
+        try:
+            parts = [p for p in line.split() if p]
+            value = int(parts[1])
+            compiled_assembly += f"""
+            pop rax
+            mov rbx, {value}
+            imul rax, rbx
+            push rax
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: 'sys.mul' requires an integer!")
+            exit()
+
+    elif line.startswith("sys.div"):
+        try:
+            parts = [p for p in line.split() if p]
+            value = int(parts[1])
+            if value == 0:
+                print(f"SECURITY ERROR on line {line_num}: Division by 0 forbidden!")
+                exit()
+            compiled_assembly += f"""
+            pop rax
+            mov rbx, {value}
+            xor rdx, rdx
+            idiv rbx
+            push rax
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: 'sys.div' requires an integer!")
+            exit()
+
+    elif line.startswith("sys.cmp"):
+        try:
+            parts = [p for p in line.split() if p]
+            value = int(parts[1])
+            compiled_assembly += f"""
+            pop rax
+            cmp rax, {value}
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: 'sys.cmp' requires an integer!")
+            exit()
+
+    elif line == "sys.if_eq":
+        if_counter += 1
+        if_stack.append(if_counter)
+        compiled_assembly += f"jne .if_end_{if_counter}\n"
+
+    elif line == "sys.if_done":
+        if not if_stack:
+            print(f"SECURITY ERROR on line {line_num}: Missing matching if statement!")
+            exit()
+        current_if = if_stack.pop()
+        compiled_assembly += f".if_end_{current_if}:\n"
+
+    elif line == "sys.loop":
+        loop_counter += 1
+        loop_stack.append(loop_counter)
+        compiled_assembly += f"""
+        pop rcx
+        xor rbx, rbx
+    .loop_start_{loop_counter}:
+        cmp rbx, rcx
+        jge .loop_end_{loop_counter}
+        push rcx
+        push rbx
+        """
+
+    elif line == "sys.loop_end":
+        if not loop_stack:
+            print(f"SECURITY ERROR on line {line_num}: Missing matching sys.loop!")
+            exit()
+        current_loop = loop_stack.pop()
+        compiled_assembly += f"""
+        pop rbx
+        pop rcx
+        inc rbx
+        jmp .loop_start_{current_loop}
+    .loop_end_{current_loop}:
+        """
+
     elif line == "sys.print_char":
         compiled_assembly += """
-        pop rax                 ; Fetch ASCII character from stack
-        mov rdi, 0xB8000        ; Standard VGA text memory base address
-        mov [rdi], al           ; Natural, clean NASM memory instruction
-        mov byte [rdi+1], 0x0A  ; Set attribute to bright AI green color
+        pop rax
+        mov rdi, 0xB8000
+        mov [rdi], al
+        mov byte [rdi+1], 0x0A      ; Bright green color
         """
 
     elif line == "sys.print_int":
         compiled_assembly += """
-        pop rax                 ; Fetch number from stack
-        sub rsp, 32             ; SAFETY: Reserve stack buffer frame FIRST
-        mov rcx, rsp            ; Position buffer pointer to bottom
-        add rcx, 32             ; Move pointer to end to execute backward conversion
-        mov rbx, 10             ; Base 10 hardware division
-        
+        pop rax
+        sub rsp, 32
+        mov rcx, rsp
+        add rcx, 32
+        mov rbx, 10
     .convert_loop_os:
-        xor rdx, rdx            ; Clear RDX before division to prevent CPU faults
-        idiv rbx                ; Divide RAX by 10. Remainder maps to RDX
-        add dl, 0x30            ; Convert remainder integer into ASCII digit character
-        dec rcx                 ; Shift buffer pointer one byte back
-        mov [rcx], dl           ; Native, clean NASM instruction
-        test rax, rax           ; Is calculation fully converted?
-        jnz .convert_loop_os    ; If quotient remains, repeat execution loop
-        
-        mov rdi, 0xB8000        ; VGA text buffer base memory address
+        xor rdx, rdx
+        idiv rbx
+        add dl, 0x30
+        dec rcx
+        mov [rcx], dl
+        test rax, rax
+        jnz .convert_loop_os
+        mov rdi, 0xB8000
         mov rdx, rsp
-        add rdx, 32             ; RDX marks top boundary of stack buffer
-        
+        add rdx, 32
     .vga_print_loop:
-        cmp rcx, rdx            ; Check if all digits have reached boundary
+        cmp rcx, rdx
         je .vga_print_done
-        mov al, [rcx]           ; Read ASCII byte from stack array
-        mov [rdi], al           ; Output directly to hardware graphics terminal
-        mov byte [rdi+1], 0x0A  ; Force bright AI green color schema
-        add rdi, 2              ; Advance VGA character matrix grid pointer
-        inc rcx                 ; Move to next sequential buffer digit
+        mov al, [rcx]
+        mov [rdi], al
+        mov byte [rdi+1], 0x0A
+        add rdi, 2
+        inc rcx
         jmp .vga_print_loop
-        
     .vga_print_done:
-        add rsp, 32             ; SAFETY: Completely restore local stack frame
+        add rsp, 32
         """
-            
     else:
         print(f"Syntax Error on line {line_num}: Unknown command '{line}'")
         exit()
 
-# ==============================================================================
-# END OF PARSER LOOP (No indentation below this section!)
-# ==============================================================================
-
-# --- SECURE HARDWARE EXIT LOOP & BOOT SIGNATURE ---
+# --- HARDWARE SYSTEM HALT LOOP ---
 compiled_assembly += """
-    mov rsp, rbp                ; Restore local stack pointer framework
-    pop rbp                     ; Restore base register anchor
+    mov rsp, rbp
+    pop rbp
 .kernel_halt:
-    hlt                         ; Safely put the CPU to sleep to save power
-    jmp .kernel_halt            ; Lock the processor in a secure infinite wait loop
-
-; --- MINIMALIST 64-BIT GLOBAL DESCRIPTOR TABLE (GDT) ---
-align 8
-gdt_start:
-    dq 0x0000000000000000   ; Null Descriptor
-gdt_code:
-    dq 0x00209A0000000000   ; 64-bit Code Descriptor (Execute/Read, Ring 0)
-gdt_data:
-    dq 0x0000920000000000   ; 64-bit Data Descriptor (Read/Write, Ring 0)
-gdt_end:
-
-gdt_ptr:
-    dw gdt_end - gdt_start - 1
-    dq gdt_start
-
-times 510-($-$$) db 0       ; Pad the rest of the 512-byte sector with zeros
-dw 0xAA55                   ; The magic x86 boot signature (0xAA55)
+    hlt
+    jmp .kernel_halt
 """
 
-
-
-
-# --- APPEND DATA SECTION VIA NATIVE NASM SYNTAX ---
+# --- APPEND DATA SECTION FOR STRINGS & PAD TOTAL IMAGE ---
 if strings_data:
     compiled_assembly += "\nsection .data\n"
     for idx, text in strings_data:
-        # NASM beautifully handles pure string definitions via the 'db' directive!
         compiled_assembly += f'msg_{idx}: db "{text}", 0\n'
+
+# Pad the final binary image to exactly 32 KB (64 sectors)
+compiled_assembly += """
+section .pad
+times 32768-($-$$) db 0
+"""
 
 # --- 2. EXPORT RAW ASSEMBLER TEXT FILE ---
 output_asm_file = "kernel.asm"
@@ -383,5 +446,5 @@ with open(output_asm_file, "w", encoding="utf-8") as f:
     f.write(compiled_assembly)
 
 print("=========================================================")
-print(f"-> STEP 1 SUCCESSFUL: Generated clean text '{output_asm_file}'")
+print(f"-> STEP 1 SUCCESSFUL: Generated Two-Stage '{output_asm_file}'")
 print("=========================================================")

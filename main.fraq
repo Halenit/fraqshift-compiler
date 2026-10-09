@@ -1,28 +1,32 @@
-; Copyright (C) 2026 Daniel Halen 
-; This program is free software: you can redistribute it and/or modify 
-; it under the terms of the GNU General Public License as published by 
-; the Free Software Foundation, either version 3 of the License, or 
-; (at your option) any later version. 
 ; ===================================================
-; FRAQSHIFT OS - BARE-METAL NASM CORE HARDWARE TEST
+; FRAQSHIFT OS - MULTI-STAGE HARDWARE INTEGRATION
 ; ===================================================
 
-; 1. INITIALIZE AND SECURE DATA ON THE STACK
+; 1. CLEAR TERMINAL GRAPHICS BUFFER
+sys.clear
+
+; 2. FLUSH ALL OLD BIOS KEYBOARD DATA BEFORE STARTING
+sys.flush_key
+
+; 3. EXECUTE THE SILICON LOOP (Print 5 green characters to VGA)
+data.int 5
+sys.loop
+    data.int 88             ; ASCII value 88 is the character 'X'
+    sys.print_char
+sys.loop_end
+
+; 4. HARDWARE PAUSE: The processor will freeze here until you press a key!
+sys.read_key
+
+; 5. SYSTEM LOGIC & VILLKORSTEST (Calculates 50 * 2 = 100)
 var base_value = 50
-
-; 2. EXECUTE ARITHMETIC DIRECTLY IN THE CPU (50 * 2 = 100)
 data.var base_value
 sys.mul 2
 
-; 3. CORE HARDWARE DECISION ENGINE TEST (Is value exactly 100?)
 sys.cmp 100
 sys.if_eq
-    ; This block runs ONLY if the hardware calculation matches perfectly!
-    data.string "FRAQSHIFT OS: Silicon decision engine is online via NASM!"
+    ; Clear screen again to show the final message cleanly
+    sys.clear
+    data.string "FRAQSHIFT OS: Loop, key-flush, and decision engines are fully operational!"
     sys.out
 sys.if_done
-
-; 4. SEQUENTIAL FLOW CONTROL (Add 42 to stack and stream to VGA)
-data.var base_value
-sys.add 42
-sys.print_int

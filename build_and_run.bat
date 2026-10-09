@@ -1,8 +1,11 @@
 @echo off
 :dev_loop
 cls
+@echo off
+:dev_loop
+cls
 echo =========================================================
-echo Copyright (C) 2026 Daniel Halen
+echo Copyright (C) 2026  Daniel Halen
 echo This program is free software: you can redistribute it and/or modify
 echo it under the terms of the GNU General Public License as published by
 echo the Free Software Foundation, either version 3 of the License, or
@@ -33,6 +36,8 @@ echo.
 echo [3/3] Launching Fraqshift OS inside QEMU Bare-Metal Sandbox...
 echo ---------------------------------------------------------
 "C:\Program Files\qemu\qemu-system-x86_64.exe" -drive format=raw,file=fraqshift_kernel.bin
+
+
 
 :menu
 echo.
