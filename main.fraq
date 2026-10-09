@@ -8,16 +8,12 @@
 sys.clear
 sys.flush_key
 
-; 1. DECLARE A HARDWARE SUBROUTINE
-func void print_success
-    sys.clear
-    data.int 777
-    sys.print_int
-func_done
+; 1. STORE THE VGA TEXT SCREEN BASE ADDRESS (0xB8000 = 753664 IN DECIMAL)
+var vga_ptr = 753664
 
-; 2. MAIN EXECUTION FLOW - CALL THE FUNCTION DIRECTLY
-sys.call print_success
+; 2. FAS 8 SUPERPOWERS: WRITE ASCII 'A' (65) DIRECTLY TO THE RAM ADDRESS STORED IN vga_ptr
+*vga_ptr = 65
 
-; 3. HARDWARE PAUSE TO ADMIRE THE WORK
+; 3. HARDWARE PAUSE TO ADMIRE THE BARE-METAL POINTER WRITE
 sys.read_key
 
