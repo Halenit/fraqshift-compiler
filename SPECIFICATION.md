@@ -124,3 +124,18 @@ Enters an immediate spin-lock loop probing the PS/2 keyboard controller status r
 Halts the processor in a safe bare-metal lock loop until the user physically presses a key on the keyboard. Once data is verified, it captures the raw hardware scancode from port `0x60`, zero-extends it, and pushes it onto the calculation stack for evaluations.
 * **Assembly mapping:** `in al, 0x64` -> `jz .wait` -> `in al, 0x60` -> `push rax`
 
+---
+
+### 3.6 Phase 8: Raw Pointer Dereferencing & Direct CPU Register Mapping
+
+Fas 8 eliminerar all runtime-overhead genom att tillåta källkoden att manipulera processorns fysiska hårdvaruregister och skriva direkt till godtyckliga adresser i datorns RAM-minne.
+
+#### `sys.reg [register] = [integer]`
+Laddar ett rått 64-bitars heltal direkt in i ett av processorns inbyggda arkitekturregister (`RAX`, `RBX`, `RCX`, `RDX`, `RSI`, `RDI`), vilket förbi-går stacken för maximal kiselhastighet.
+* **Assembly mapping:** `mov reg, value`
+
+#### `*[pointer_variable] = [integer / register]`
+Avrefererar en minnespekare (*Pointer Dereferencing*). Hämtar den RAM-adress som finns lagrad i variabeln och skriver antingen ett fast värde eller innehållet från ett CPU-register direkt till den fysiska minnescellen.
+* **Assembly mapping (Immediate):** `mov rbx, [rbp - offset]` -> `mov rax, value` -> `mov [rbx], al`
+* **Assembly mapping (Register):** `mov rbx, [rbp - offset]` -> `mov [rbx], cl` (eller matchande 8-bitars lågregister)
+
