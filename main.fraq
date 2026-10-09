@@ -1,32 +1,24 @@
-; ===================================================
-; FRAQSHIFT OS - MULTI-STAGE HARDWARE INTEGRATION
-; ===================================================
-
-; 1. CLEAR TERMINAL GRAPHICS BUFFER
 sys.clear
-
-; 2. FLUSH ALL OLD BIOS KEYBOARD DATA BEFORE STARTING
 sys.flush_key
 
-; 3. EXECUTE THE SILICON LOOP (Print 5 green characters to VGA)
+; 1. EXECUTE LOOPS (5 times)
 data.int 5
 sys.loop
-    data.int 88             ; ASCII value 88 is the character 'X'
+    data.int 88             ; ASCII for 'X'
     sys.print_char
 sys.loop_end
 
-; 4. HARDWARE PAUSE: The processor will freeze here until you press a key!
+; 2. HARDWARE PAUSE
 sys.read_key
 
-; 5. SYSTEM LOGIC & VILLKORSTEST (Calculates 50 * 2 = 100)
+; 3. CORE LOGIC
 var base_value = 50
 data.var base_value
 sys.mul 2
 
 sys.cmp 100
 sys.if_eq
-    ; Clear screen again to show the final message cleanly
     sys.clear
-    data.string "FRAQSHIFT OS: Loop, key-flush, and decision engines are fully operational!"
+    data.string "FRAQSHIFT OS: Loop and decision engines are operating in sync!"
     sys.out
 sys.if_done

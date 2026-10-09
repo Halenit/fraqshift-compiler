@@ -266,6 +266,7 @@ for line_num, line in enumerate(lines, 1):
         mov [rdi], ax           ; Clear current screen cell
         add rdi, 2              ; Move to next cell pointer
         loop .vga_clear_loop_{clear_counter}
+        mov rdi, 0xB8000        ; Reset pointer back to top-left corner for future writing!
         """
 
         # --- ARITHMETIC OPERATIONS (STACK-BASED) ---
@@ -379,11 +380,12 @@ for line_num, line in enumerate(lines, 1):
 
     elif line == "sys.print_char":
         compiled_assembly += """
-        pop rax
-        mov rdi, 0xB8000
-        mov [rdi], al
-        mov byte [rdi+1], 0x0A      ; Bright green color
+        pop rax                 ; Fetch ASCII character from stack
+        mov [rdi], al           ; Write character directly to current tracked VGA pointer
+        mov byte [rdi+1], 0x0A  ; Set attribute to bright AI green color
+        add rdi, 2              ; CRITICAL FIX: Advance tracking pointer 2 bytes forward!
         """
+
 
     elif line == "sys.print_int":
         compiled_assembly += """
