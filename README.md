@@ -71,7 +71,7 @@ To design a compiler that executes faster and cleaner than C/C++ and Python, Fra
 - [x] **Phase 4-5: Hardware Engines & VGA** — Implementation of the silicon decision engine (`sys.if_eq`), text-streaming to VGA memory, and local automated NASM pipeline.
 - [x] **Phase 6: Hardware Flow Control** — Deterministic loop blocks (`sys.loop`), PS/2 keyboard buffer flushing, and a robust multi-stage bootloader architecture.
 - [x] **Phase 7 (Current): Memory Matrix & Subroutines** — Static 64-bit array allocation, dynamic element indexing, and bare-metal function blocks (`func void`) using native CPU calling conventions.
-- [ ] **Phase 8: Pointer Dereferencing & Registers** — Direct raw memory pointers, high-speed RAM streaming, and manual CPU register optimization mapping (`sys.reg`) to maximize execution speeds.
+- [x] **Phase 8: Pointer Dereferencing & Registers** — Direct raw memory pointers, high-speed RAM streaming, and manual CPU register optimization mapping (`sys.reg`) to maximize execution speeds.
 - [ ] **Phase 9: Single-Pass Tokenizer & Self-Hosting Execution** — Writing the final compilation engine inside Fraqshift itself. The compiler reads `main.fraq` using text-arrays, outputs pure machine code without python/linker dependencies, and achieves 100% self-hosting supremacy inside Fraqshift OS.
 
 
