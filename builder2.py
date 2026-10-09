@@ -202,6 +202,107 @@ for line_num, line in enumerate(lines, 1):
             print(f"Syntax Error on line {line_num}: Invalid variable declaration!")
             exit()
 
+        # --- DYNAMIC VARIABLE & ARRAY REASSIGNMENT (Phase 7) ---
+    elif "=" in line and not line.startswith("var "):
+        try:
+            parts = [p for p in line.split() if p]
+            eq_idx = parts.index("=")
+            new_value = int(parts[eq_idx + 1])
+            left_side = parts[0]
+
+            # Case A: Array element write (e.g., my_list[0] = 42)
+            if "[" in left_side and left_side.endswith("]"):
+                var_name = left_side.split("[")[0]
+                array_idx = int(left_side.split("[")[1].replace("]", ""))
+                
+                if var_name not in symbol_table:
+                    print(f"SECURITY ERROR on line {line_num}: Undeclared array '{var_name}'!")
+                    exit()
+                    
+                # Calculate the exact hardware stack offset for this element
+                base_offset = symbol_table[var_name]
+                element_offset = base_offset - (array_idx * 8)
+                
+                compiled_assembly += f"""
+                mov rax, {new_value}        ; Load literal value into RAX
+                mov [rbp - {element_offset}], rax ; Overwrite specific array index slot
+                """
+            
+            # Case B: Standard variable write (e.g., counter = 7)
+            else:
+                var_name = left_side
+                if var_name not in symbol_table:
+                    print(f"SECURITY ERROR on line {line_num}: Undeclared variable '{var_name}'!")
+                    exit()
+                offset = symbol_table[var_name]
+                compiled_assembly += f"""
+                mov rax, {new_value}
+                mov [rbp - {offset}], rax
+                """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: Invalid reassignment syntax!")
+            exit()
+
+
+        # --- DECLARE FIXED SIZED ARRAY (Phase 7: var.array my_list[5]) ---
+    elif line.startswith("var.array "):
+        try:
+            # Clean tokens safely
+            parts = [p for p in line.split() if p]
+            # Expect format: var.array name[size] -> e.g. var.array my_list[5]
+            declaration = parts[1]
+            
+            if "[" not in declaration or not declaration.endswith("]"):
+                raise ValueError
+                
+            var_name = declaration.split("[")[0]
+            array_size = int(declaration.split("[")[1].replace("]", ""))
+            
+            if var_name in symbol_table:
+                print(f"SECURITY ERROR on line {line_num}: Identifier '{var_name}' is already declared!")
+                exit()
+                
+            # Each element in our 64-bit OS takes exactly 8 bytes of space
+            total_bytes = array_size * 8
+            stack_offset += total_bytes
+            
+            # Save the base memory address (the lowest offset) of the array in the symbol table
+            symbol_table[var_name] = stack_offset
+            
+            # Emit assembly to safely adjust RSP to reserve space on the hardware stack frame
+            compiled_assembly += f"""
+            sub rsp, {total_bytes}         ; Allocate {total_bytes} bytes securely for array '{var_name}'
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: Invalid array declaration! Format: var.array name[size]")
+            exit()
+        # --- PUSH ARRAY ELEMENT TO CALCULATION STACK (Phase 7: data.array my_list[0]) ---
+    elif line.startswith("data.array "):
+        try:
+            parts = [p for p in line.split() if p]
+            target = parts[1]
+            
+            if "[" not in target or not target.endswith("]"):
+                raise ValueError
+                
+            var_name = target.split("[")[0]
+            array_idx = int(target.split("[")[1].replace("]", ""))
+            
+            if var_name not in symbol_table:
+                print(f"SECURITY ERROR on line {line_num}: Array '{var_name}' is not declared!")
+                exit()
+                
+            base_offset = symbol_table[var_name]
+            element_offset = base_offset - (array_idx * 8)
+            
+            compiled_assembly += f"""
+            mov rax, [rbp - {element_offset}] ; Fetch array element from secure memory grid
+            push rax                         ; Push to stack for printing or calculations
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: Invalid data.array format! Expected: data.array name[index]")
+            exit()
+    
     elif line.startswith("data.var"):
         try:
             parts = [p for p in line.split() if p]

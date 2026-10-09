@@ -9,24 +9,16 @@
 sys.clear
 sys.flush_key
 
-; 1. EXECUTE LOOPS (5 times)
-data.int 5
-sys.loop
-    data.int 88             ; ASCII for 'X'
-    sys.print_char
-sys.loop_end
+; 1. ALLOCATE ARRAY WITH 5 SLOTS
+var.array my_list[5]
 
-; 2. HARDWARE PAUSE
+; 2. WRITE VALUES DIRECTLY INTO DIFFERENT KISEL-NODES
+my_list[0] = 42
+my_list[1] = 99
+
+; 3. FETCH ELEMENT AT INDEX 1 (Should print 99)
+data.array my_list[1]
+sys.print_int
+
+; 4. HARDWARE PAUSE
 sys.read_key
-
-; 3. CORE LOGIC
-var base_value = 50
-data.var base_value
-sys.mul 2
-
-sys.cmp 100
-sys.if_eq
-    sys.clear
-    data.string "FRAQSHIFT OS: Loop and decision engines are operating in sync!"
-    sys.out
-sys.if_done
