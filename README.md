@@ -63,13 +63,17 @@ The automated script handles the entire lifecycle:
 2. **Hardware Assembly:** `nasm.exe` packages the assembly into a flat binary file (`fraqshift_kernel.bin`) injected with a magic boot sector signature (`0xAA55`).
 3. **Sandbox Booting:** Launches QEMU to execute your native code inside an isolated hardware sandbox.
 
-## Project Roadmap
+## Project Roadmap & Self-Hosting Strategy
 
-- [x] **Phase 1-3:** Bootstrap compiler infrastructure, variable stack allocation, and bare-metal output.
-- [x] **Phase 4-5:** Hardware decision engine (`sys.if_eq`), VGA text-streaming, local NASM pipeline, and 64-bit Long Mode initialization trampoline.
-- [x] **Phase 6 (Next):** Implement hardware loop blocks (`sys.loop`) for repetitive execution and stream scanning.
-- [ ] **Phase 7:** Dynamic variable reassignment and memory pointers (Arrays).
-- [ ] **Phase 8:** Self-hosting transition—writing the compiler inside Fraqshift OS.
+To design a compiler that executes faster and cleaner than C/C++ and Python, Fraqshift eliminates legacy overhead (such as include-headers and virtual runtimes) through a 9-Phase bare-metal engineering blueprint.
+
+- [x] **Phase 1-3: Bootstrap Compiler Base** — Core Python tokenization, raw 64-bit stack frame allocation, and basic x86-64 flat binary output.
+- [x] **Phase 4-5: Hardware Engines & VGA** — Implementation of the silicon decision engine (`sys.if_eq`), text-streaming to VGA memory, and local automated NASM pipeline.
+- [x] **Phase 6: Hardware Flow Control** — Deterministic loop blocks (`sys.loop`), PS/2 keyboard buffer flushing, and a robust multi-stage bootloader architecture.
+- [ ] **Phase 7 (Current): Memory Matrix & Subroutines** — Static 64-bit array allocation, dynamic element indexing, and bare-metal function blocks (`func void`) using native CPU calling conventions.
+- [ ] **Phase 8: Pointer Dereferencing & Registers** — Direct raw memory pointers, high-speed RAM streaming, and manual CPU register optimization mapping (`sys.reg`) to maximize execution speeds.
+- [ ] **Phase 9: Single-Pass Tokenizer & Self-Hosting Execution** — Writing the final compilation engine inside Fraqshift itself. The compiler reads `main.fraq` using text-arrays, outputs pure machine code without python/linker dependencies, and achieves 100% self-hosting supremacy inside Fraqshift OS.
+
 
 ## License
 
