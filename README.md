@@ -67,7 +67,7 @@ The automated script handles the entire lifecycle:
 
 - [x] **Phase 1-3:** Bootstrap compiler infrastructure, variable stack allocation, and bare-metal output.
 - [x] **Phase 4-5:** Hardware decision engine (`sys.if_eq`), VGA text-streaming, local NASM pipeline, and 64-bit Long Mode initialization trampoline.
-- [ ] **Phase 6 (Next):** Implement hardware loop blocks (`sys.loop`) for repetitive execution and stream scanning.
+- [x] **Phase 6 (Next):** Implement hardware loop blocks (`sys.loop`) for repetitive execution and stream scanning.
 - [ ] **Phase 7:** Dynamic variable reassignment and memory pointers (Arrays).
 - [ ] **Phase 8:** Self-hosting transition—writing the compiler inside Fraqshift OS.
 
