@@ -70,7 +70,7 @@ Pops the top value, clears `RDX` to prevent CPU faults, divides `RAX` by the imm
 
 ---
 
-### 3.3 Hardware Decision Engine (Flow Control)
+### 3.3 Hardware Decision Engine & Repetitive Flow Control
 
 #### `sys.cmp [integer]`
 Pops the latest calculation result from the stack and compares it with the immediate integer, setting the processor's hardware flags (`RFLAGS`).
@@ -83,6 +83,14 @@ Defines the start of a conditional hardware block. If the previous comparison fl
 #### `sys.if_done`
 Marks the absolute structural end boundary of a conditional block.
 * **Assembly mapping:** `.if_end_[id]:`
+
+#### `sys.loop`
+Pops a loop counter limit from the calculation stack, initializes the hardware counter matrix, and opens an isolated repetitive execution block. To prevent corruption from inner code execution, active index states are safely preserved on the hardware stack.
+* **Assembly mapping:** `pop rcx` -> `xor rbx, rbx` -> `.loop_start_[id]:` -> `cmp rbx, rcx` -> `jge .loop_end_[id]`
+
+#### `sys.loop_end`
+Marks the boundary of a hardware loop. Safely restores the iterator index, increments it, performs a boundary check, and spins the execution thread back to the loop start condition.
+* **Assembly mapping:** `pop rbx` -> `pop rcx` -> `inc rbx` -> `jmp .loop_start_[id]` -> `.loop_end_[id]:`
 
 ---
 
@@ -98,4 +106,21 @@ Streams the most recently declared string directly into the VGA text-buffer memo
 Pops a 64-bit integer from the stack, executes base-10 hardware division loops, converts the individual numbers to ASCII digits backwards into a safe stack array, and dumps the string to the VGA graphics terminal in **bright AI green**.
 
 #### `sys.print_char`
-Pops an ASCII byte value from the calculation stack and outputs a single character straight onto the active VGA text matrix cell.
+Pops an ASCII byte value from the calculation stack, outputs a single character straight onto the active VGA text matrix cell tracked by the global pointer, and automatically advances the hardware graphics cursor forward.
+* **Assembly mapping:** `mov [rdi], al` -> `add rdi, 2`
+
+#### `sys.clear`
+Flushes the entire 80x25 VGA text buffer screen layout by writing empty ASCII spaces (`0x20`) with clean attributes across all 2000 hardware cells, and anchors the global tracking pointer (`RDI`) back to the top-left memory node (`0xB8000`).
+
+---
+
+### 3.5 PS/2 Hardware Peripheral Interfacing
+
+#### `sys.flush_key`
+Enters an immediate spin-lock loop probing the PS/2 keyboard controller status register. If old BIOS configurations or leftover scancodes are present in the buffer, they are read and dropped to guarantee a pristine hardware input port state.
+* **Assembly mapping:** `in al, 0x64` -> `test al, 0x01` -> `in al, 0x60`
+
+#### `sys.read_key`
+Halts the processor in a safe bare-metal lock loop until the user physically presses a key on the keyboard. Once data is verified, it captures the raw hardware scancode from port `0x60`, zero-extends it, and pushes it onto the calculation stack for evaluations.
+* **Assembly mapping:** `in al, 0x64` -> `jz .wait` -> `in al, 0x60` -> `push rax`
+
