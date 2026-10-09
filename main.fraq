@@ -8,12 +8,15 @@
 sys.clear
 sys.flush_key
 
-; 1. STORE THE VGA TEXT SCREEN BASE ADDRESS (0xB8000 = 753664 IN DECIMAL)
-var vga_ptr = 753664
+; 1. Direct register load
+sys.reg rcx = 66
 
-; 2. FAS 8 SUPERPOWERS: WRITE ASCII 'A' (65) DIRECTLY TO THE RAM ADDRESS STORED IN vga_ptr
-*vga_ptr = 65
+; 2. Define memory pointer for screen line 2
+var target_ptr = 753824
 
-; 3. HARDWARE PAUSE TO ADMIRE THE BARE-METAL POINTER WRITE
+; 3. Write directly from register to RAM
+*target_ptr = rcx
+
+; 4. Hardware pause
 sys.read_key
 

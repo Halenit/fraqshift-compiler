@@ -227,37 +227,65 @@ for line_num, line in enumerate(lines, 1):
         except (IndexError, ValueError):
             print(f"Syntax Error on line {line_num}: Invalid array declaration!")
             exit()
-        # --- Phase 8: RAW POINTER DEREFERENCING WRITE (*vga_ptr = 65) ---
+
+            # --- Phase 8: DIRECT CPU REGISTER MAPPING (sys.reg rcx = 66) ---
+    elif line.startswith("sys.reg "):
+        try:
+            parts = [p for p in line.split() if p]
+            reg_name = parts[1].lower()
+            
+            valid_registers = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi"]
+            if reg_name not in valid_registers:
+                print(f"SECURITY ERROR on line {line_num}: Register '{reg_name}' is invalid or protected!")
+                exit()
+                
+            eq_idx = parts.index("=")
+            reg_value = int(parts[eq_idx + 1])
+            
+            target_code += f"""
+            mov {reg_name}, {reg_value}        ; Load value directly into hardware register
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: Invalid register mapping syntax!")
+            exit()
+
+    # --- Phase 8: RAW POINTER DEREFERENCING WRITE (*vga_ptr = 65) ---
     elif line.startswith("*"):
         try:
-            # Clean and split tokens safely
             parts = [p for p in line.split() if p]
-            
-            # Extract target pointer variable and new value
-            # Format: *vga_ptr = 65
-            left_side = parts[0] # This will be '*vga_ptr'
+            left_side = parts[0]
             var_name = left_side.lstrip("*")
             
             eq_idx = parts.index("=")
-            new_value = int(parts[eq_idx + 1])
+            right_side = parts[eq_idx + 1].lower()
             
-            # Security check: Ensure the pointer variable actually exists
+            if right_side in ["rax", "rbx", "rcx", "rdx", "rsi", "rdi"]:
+                new_value = right_side
+                asm_src = "cl" if new_value == "rcx" else (
+                          "dl" if new_value == "rdx" else (
+                          "bl" if new_value == "rbx" else "al"))
+            else:
+                new_value = int(right_side)
+                asm_src = "al"
+            
             if var_name not in symbol_table:
                 print(f"SECURITY ERROR on line {line_num}: Pointer variable '{var_name}' is undeclared!")
                 exit()
                 
             offset = symbol_table[var_name]
             
-            # Emit hyper-optimized x86-64 assembly to write directly to RAM address
             target_code += f"""
-            mov rbx, [rbp - {offset}]   ; Load the memory address stored in '{var_name}' into RBX
-            mov rax, {new_value}        ; Load immediate value into RAX
-            mov [rbx], al               ; Write 8-bit value (AL) directly to the address tracked by RBX!
+            mov rbx, [rbp - {offset}]   ; Load memory address into RBX
             """
+            if isinstance(new_value, int):
+                target_code += f"mov rax, {new_value}        ; Load immediate literal\n"
+            
+            target_code += f"mov [rbx], {asm_src}               ; Write data directly to RAM address via hardware register!\n"
         except (IndexError, ValueError):
             print(f"Syntax Error on line {line_num}: Invalid raw pointer assignment syntax!")
             exit()
-            
+
+
     # --- DYNAMIC VARIABLE & ARRAY REASSIGNMENT (Phase 7) ---
     elif "=" in line and not line.startswith("var "):
         try:
