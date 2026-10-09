@@ -19,10 +19,12 @@
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 import os
 import sys
 
-print("--- FRAQSHIFT OS CORE COMPILER V6.2 (TWO-STAGE NASM ENGINE) ---")
+print("--- FRAQSHIFT OS CORE COMPILER V6.3 (SUBROUTINE ISOLATION ENGINE) ---")
 
 source_file = "main.fraq"
 if not os.path.exists(source_file):
@@ -34,12 +36,12 @@ with open(source_file, "r", encoding="utf-8") as f:
 
 # --- 1. LEXER, PARSER & SYMBOL TABLE ---
 compiled_assembly = ""
+compiled_functions = ""  # CRITICAL FIX: Separate function stream to isolate them from boot flow
 strings_data = []
 current_string_index = 0
 
-# Symbol tables and tracking stacks for flow control
 symbol_table = {}
-stack_offset = 0  # Each new 64-bit variable takes 8 bytes of space
+stack_offset = 0
 
 if_counter = 0
 if_stack = []
@@ -47,7 +49,8 @@ if_stack = []
 loop_counter = 0
 loop_stack = []
 
-clear_counter = 0  # Track unique clear loops to prevent NASM definition errors
+clear_counter = 0
+in_function = False
 
 # --- STAGE 1 BOOTLOADER: Read Kernel from disk & Switch to 64-bit ---
 compiled_assembly += """BITS 16
@@ -139,6 +142,7 @@ stage2_kernel:
     mov fs, ax
     mov gs, ax
     mov ss, ax
+    mov rdi, 0xB8000        ; Initialize screen pointer
 
 kernel_main:
     push rbp
@@ -151,6 +155,9 @@ for line_num, line in enumerate(lines, 1):
     if not line or line.startswith(";"):
         continue
         
+        # --- ROUTE GENERATION BASED ON CONTEXT ---
+    target_code = ""
+
     if line.startswith("data.string"):
         try:
             parts = line.split('"')
@@ -167,7 +174,7 @@ for line_num, line in enumerate(lines, 1):
             exit()
         idx, text = strings_data[-1]
         length = len(text.encode('utf-8'))
-        compiled_assembly += f"""
+        target_code += f"""
         lea rsi, [rel msg_{idx}]
         mov rdi, 0xB8000
         mov rcx, {length}
@@ -181,11 +188,8 @@ for line_num, line in enumerate(lines, 1):
 
     elif line.startswith("var "):
         try:
-            # Safe parsing regardless of token lengths or whitespace anomalies
             parts = [p for p in line.split() if p]
             var_name = parts[1]
-            
-            # Find the position of the '=' token dynamically
             eq_idx = parts.index("=")
             var_value = int(parts[eq_idx + 1])
             
@@ -194,7 +198,7 @@ for line_num, line in enumerate(lines, 1):
                 exit()
             stack_offset += 8
             symbol_table[var_name] = stack_offset
-            compiled_assembly += f"""
+            target_code += f"""
             mov rax, {var_value}
             mov [rbp - {stack_offset}], rax
             """
@@ -202,7 +206,28 @@ for line_num, line in enumerate(lines, 1):
             print(f"Syntax Error on line {line_num}: Invalid variable declaration!")
             exit()
 
-        # --- DYNAMIC VARIABLE & ARRAY REASSIGNMENT (Phase 7) ---
+    elif line.startswith("var.array "):
+        try:
+            parts = [p for p in line.split() if p]
+            declaration = parts[1]
+            if "[" not in declaration or not declaration.endswith("]"):
+                raise ValueError
+            var_name = declaration.split("[")[0]
+            array_size = int(declaration.split("[")[1].replace("]", ""))
+            
+            if var_name in symbol_table:
+                print(f"SECURITY ERROR on line {line_num}: Identifier '{var_name}' already declared!")
+                exit()
+            total_bytes = array_size * 8
+            stack_offset += total_bytes
+            symbol_table[var_name] = stack_offset
+            target_code += f"""
+            sub rsp, {total_bytes}         ; Allocate space for array
+            """
+        except (IndexError, ValueError):
+            print(f"Syntax Error on line {line_num}: Invalid array declaration!")
+            exit()
+
     elif "=" in line and not line.startswith("var "):
         try:
             parts = [p for p in line.split() if p]
@@ -210,32 +235,23 @@ for line_num, line in enumerate(lines, 1):
             new_value = int(parts[eq_idx + 1])
             left_side = parts[0]
 
-            # Case A: Array element write (e.g., my_list[0] = 42)
             if "[" in left_side and left_side.endswith("]"):
                 var_name = left_side.split("[")[0]
                 array_idx = int(left_side.split("[")[1].replace("]", ""))
-                
                 if var_name not in symbol_table:
-                    print(f"SECURITY ERROR on line {line_num}: Undeclared array '{var_name}'!")
                     exit()
-                    
-                # Calculate the exact hardware stack offset for this element
                 base_offset = symbol_table[var_name]
                 element_offset = base_offset - (array_idx * 8)
-                
-                compiled_assembly += f"""
-                mov rax, {new_value}        ; Load literal value into RAX
-                mov [rbp - {element_offset}], rax ; Overwrite specific array index slot
+                target_code += f"""
+                mov rax, {new_value}
+                mov [rbp - {element_offset}], rax
                 """
-            
-            # Case B: Standard variable write (e.g., counter = 7)
             else:
                 var_name = left_side
                 if var_name not in symbol_table:
-                    print(f"SECURITY ERROR on line {line_num}: Undeclared variable '{var_name}'!")
                     exit()
                 offset = symbol_table[var_name]
-                compiled_assembly += f"""
+                target_code += f"""
                 mov rax, {new_value}
                 mov [rbp - {offset}], rax
                 """
@@ -243,253 +259,168 @@ for line_num, line in enumerate(lines, 1):
             print(f"Syntax Error on line {line_num}: Invalid reassignment syntax!")
             exit()
 
-
-        # --- DECLARE FIXED SIZED ARRAY (Phase 7: var.array my_list[5]) ---
-    elif line.startswith("var.array "):
-        try:
-            # Clean tokens safely
-            parts = [p for p in line.split() if p]
-            # Expect format: var.array name[size] -> e.g. var.array my_list[5]
-            declaration = parts[1]
-            
-            if "[" not in declaration or not declaration.endswith("]"):
-                raise ValueError
-                
-            var_name = declaration.split("[")[0]
-            array_size = int(declaration.split("[")[1].replace("]", ""))
-            
-            if var_name in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Identifier '{var_name}' is already declared!")
-                exit()
-                
-            # Each element in our 64-bit OS takes exactly 8 bytes of space
-            total_bytes = array_size * 8
-            stack_offset += total_bytes
-            
-            # Save the base memory address (the lowest offset) of the array in the symbol table
-            symbol_table[var_name] = stack_offset
-            
-            # Emit assembly to safely adjust RSP to reserve space on the hardware stack frame
-            compiled_assembly += f"""
-            sub rsp, {total_bytes}         ; Allocate {total_bytes} bytes securely for array '{var_name}'
-            """
-        except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: Invalid array declaration! Format: var.array name[size]")
-            exit()
-        # --- PUSH ARRAY ELEMENT TO CALCULATION STACK (Phase 7: data.array my_list[0]) ---
     elif line.startswith("data.array "):
         try:
             parts = [p for p in line.split() if p]
             target = parts[1]
-            
-            if "[" not in target or not target.endswith("]"):
-                raise ValueError
-                
             var_name = target.split("[")[0]
             array_idx = int(target.split("[")[1].replace("]", ""))
-            
-            if var_name not in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Array '{var_name}' is not declared!")
-                exit()
-                
             base_offset = symbol_table[var_name]
             element_offset = base_offset - (array_idx * 8)
-            
-            compiled_assembly += f"""
-            mov rax, [rbp - {element_offset}] ; Fetch array element from secure memory grid
-            push rax                         ; Push to stack for printing or calculations
+            target_code += f"""
+            mov rax, [rbp - {element_offset}]
+            push rax
             """
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: Invalid data.array format! Expected: data.array name[index]")
+            print(f"Syntax Error on line {line_num}: Invalid data.array format!")
             exit()
-    
+
+    elif line.startswith("func void "):
+        try:
+            parts = [p for p in line.split() if p]
+            func_name = parts[2]
+            compiled_functions += f"\n{func_name}:\n"
+            in_function = True
+            continue
+        except IndexError:
+            exit()
+
+    elif line == "func_done":
+        if not in_function:
+            exit()
+        compiled_functions += "\nret\n"
+        in_function = False
+        continue
+
+    elif line.startswith("sys.call "):
+        try:
+            parts = [p for p in line.split() if p]
+            func_name = parts[1]
+            target_code += f"\ncall {func_name}\n"
+        except IndexError:
+            exit()
+
     elif line.startswith("data.var"):
         try:
             parts = [p for p in line.split() if p]
             var_name = parts[1]
-            if var_name not in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Variable '{var_name}' not declared!")
-                exit()
             offset = symbol_table[var_name]
-            compiled_assembly += f"""
+            target_code += f"""
             mov rax, [rbp - {offset}]
             push rax
             """
         except IndexError:
-            print(f"Syntax Error on line {line_num}: Missing variable name!")
             exit()
 
     elif line.startswith("data.int"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            compiled_assembly += f"""
+            target_code += f"""
             mov rax, {value}
             push rax
             """
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'data.int' requires an integer!")
             exit()
 
-    # --- FLUSH KEYBOARD BUFFER (`sys.flush_key`) ---
     elif line == "sys.flush_key":
-        compiled_assembly += """
+        target_code += """
     .flush_loop:
-        in al, 0x64             ; Read PS/2 status register
-        test al, 0x01           ; Check if data is present in buffer (bit 0)
-        jz .flush_done          ; If bit 0 is empty, buffer is cleared!
-        in al, 0x60             ; Data present? Read and drop it to clear port
-        jmp .flush_loop         ; Keep looping until buffer is perfectly empty
+        in al, 0x64
+        test al, 0x01
+        jz .flush_done
+        in al, 0x60
+        jmp .flush_loop
     .flush_done:
         """
 
-    # --- PS/2 KEYBOARD INTERFACE (`sys.read_key`) ---
     elif line == "sys.read_key":
-        compiled_assembly += """
+        target_code += """
     .wait_for_key:
-        in al, 0x64             ; Read hardware status port from PS2 controller
-        test al, 0x01           ; Mask bit 0 (Output Buffer Full status)
-        jz .wait_for_key        ; If bit is 0, no data is ready -> spin lock loop
-        
-        in al, 0x60             ; Data ready! Read raw scancode from dataport 0x60
-        movzx rax, al           ; Zero-extend 8-bit scancode into 64-bit RAX register
-        push rax                ; Save scancode securely on calculation stack
+        in al, 0x64
+        test al, 0x01
+        jz .wait_for_key
+        in al, 0x60
+        movzx rax, al
+        push rax
         """
 
-    # --- VGA SCREEN REFRESH (`sys.clear`) ---
     elif line == "sys.clear":
         clear_counter += 1
-        compiled_assembly += f"""
-        mov rdi, 0xB8000        ; Base address of VGA text buffer
-        mov rcx, 2000           ; A standard terminal screen has 80x25 = 2000 character cells
-        mov ax, 0x0720          ; 0x20 = ASCII space character, 0x07 = Light gray attribute
+        target_code += f"""
+        mov rdi, 0xB8000
+        mov rcx, 2000
+        mov ax, 0x0720
     .vga_clear_loop_{clear_counter}:
-        mov [rdi], ax           ; Clear current screen cell
-        add rdi, 2              ; Move to next cell pointer
+        mov [rdi], ax
+        add rdi, 2
         loop .vga_clear_loop_{clear_counter}
-        mov rdi, 0xB8000        ; Reset pointer back to top-left corner for future writing!
+        mov rdi, 0xB8000
         """
 
-        # --- ARITHMETIC OPERATIONS (STACK-BASED) ---
     elif line.startswith("sys.add"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax
-            add rax, {value}
-            push rax
-            """
+            target_code += f"\npop rax\nadd rax, {value}\npush rax\n"
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.add' requires an integer!")
             exit()
 
     elif line.startswith("sys.sub"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax
-            sub rax, {value}
-            push rax
-            """
+            target_code += f"\npop rax\nsub rax, {value}\npush rax\n"
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.sub' requires an integer!")
             exit()
 
     elif line.startswith("sys.mul"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax
-            mov rbx, {value}
-            imul rax, rbx
-            push rax
-            """
+            target_code += f"\npop rax\nmov rbx, {value}\nimul rax, rbx\npush rax\n"
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.mul' requires an integer!")
             exit()
 
     elif line.startswith("sys.div"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            if value == 0:
-                print(f"SECURITY ERROR on line {line_num}: Division by 0 forbidden!")
-                exit()
-            compiled_assembly += f"""
-            pop rax
-            mov rbx, {value}
-            xor rdx, rdx
-            idiv rbx
-            push rax
-            """
+            target_code += f"\npop rax\nmov rbx, {value}\nxor rdx, rdx\nidiv rbx\npush rax\n"
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.div' requires an integer!")
             exit()
 
     elif line.startswith("sys.cmp"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            compiled_assembly += f"""
-            pop rax
-            cmp rax, {value}
-            """
+            target_code += f"\npop rax\ncmp rax, {value}\n"
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: 'sys.cmp' requires an integer!")
             exit()
 
     elif line == "sys.if_eq":
         if_counter += 1
         if_stack.append(if_counter)
-        compiled_assembly += f"jne .if_end_{if_counter}\n"
+        target_code += f"jne .if_end_{if_counter}\n"
 
     elif line == "sys.if_done":
-        if not if_stack:
-            print(f"SECURITY ERROR on line {line_num}: Missing matching if statement!")
-            exit()
         current_if = if_stack.pop()
-        compiled_assembly += f".if_end_{current_if}:\n"
+        target_code += f".if_end_{current_if}:\n"
 
     elif line == "sys.loop":
         loop_counter += 1
         loop_stack.append(loop_counter)
-        compiled_assembly += f"""
-        pop rcx
-        xor rbx, rbx
-    .loop_start_{loop_counter}:
-        cmp rbx, rcx
-        jge .loop_end_{loop_counter}
-        push rcx
-        push rbx
-        """
+        target_code += f"\npop rcx\nxor rbx, rbx\n.loop_start_{loop_counter}:\ncmp rbx, rcx\njge .loop_end_{loop_counter}\npush rcx\npush rbx\n"
 
     elif line == "sys.loop_end":
-        if not loop_stack:
-            print(f"SECURITY ERROR on line {line_num}: Missing matching sys.loop!")
-            exit()
         current_loop = loop_stack.pop()
-        compiled_assembly += f"""
-        pop rbx
-        pop rcx
-        inc rbx
-        jmp .loop_start_{current_loop}
-    .loop_end_{current_loop}:
-        """
+        target_code += f"\npop rbx\npop rcx\ninc rbx\njmp .loop_start_{current_loop}\n.loop_end_{current_loop}:\n"
 
     elif line == "sys.print_char":
-        compiled_assembly += """
-        pop rax                 ; Fetch ASCII character from stack
-        mov [rdi], al           ; Write character directly to current tracked VGA pointer
-        mov byte [rdi+1], 0x0A  ; Set attribute to bright AI green color
-        add rdi, 2              ; CRITICAL FIX: Advance tracking pointer 2 bytes forward!
-        """
-
+        target_code += "\npop rax\nmov [rdi], al\nmov byte [rdi+1], 0x0A\nadd rdi, 2\n"
 
     elif line == "sys.print_int":
-        compiled_assembly += """
+        target_code += """
         pop rax
         sub rsp, 32
         mov rcx, rsp
@@ -522,6 +453,12 @@ for line_num, line in enumerate(lines, 1):
         print(f"Syntax Error on line {line_num}: Unknown command '{line}'")
         exit()
 
+    # Append to the right code section stream
+    if in_function:
+        compiled_functions += target_code
+    else:
+        compiled_assembly += target_code
+
 # --- HARDWARE SYSTEM HALT LOOP ---
 compiled_assembly += """
     mov rsp, rbp
@@ -531,19 +468,20 @@ compiled_assembly += """
     jmp .kernel_halt
 """
 
+# --- INJECT ALL SAFE SUBROUTINES AT THE ABSOLUTE BOTTOM ---
+compiled_assembly += compiled_functions
+
 # --- APPEND DATA SECTION FOR STRINGS & PAD TOTAL IMAGE ---
 if strings_data:
     compiled_assembly += "\nsection .data\n"
     for idx, text in strings_data:
         compiled_assembly += f'msg_{idx}: db "{text}", 0\n'
 
-# Pad the final binary image to exactly 32 KB (64 sectors)
 compiled_assembly += """
 section .pad
 times 32768-($-$$) db 0
 """
 
-# --- 2. EXPORT RAW ASSEMBLER TEXT FILE ---
 output_asm_file = "kernel.asm"
 with open(output_asm_file, "w", encoding="utf-8") as f:
     f.write(compiled_assembly)
@@ -551,3 +489,4 @@ with open(output_asm_file, "w", encoding="utf-8") as f:
 print("=========================================================")
 print(f"-> STEP 1 SUCCESSFUL: Generated Two-Stage '{output_asm_file}'")
 print("=========================================================")
+

@@ -5,20 +5,19 @@
 ;# the Free Software Foundation, either version 3 of the License, or
 ;# (at your option) any later version.
 ;# =========================================================
-
 sys.clear
 sys.flush_key
 
-; 1. ALLOCATE ARRAY WITH 5 SLOTS
-var.array my_list[5]
+; 1. DECLARE A HARDWARE SUBROUTINE
+func void print_success
+    sys.clear
+    data.int 777
+    sys.print_int
+func_done
 
-; 2. WRITE VALUES DIRECTLY INTO DIFFERENT KISEL-NODES
-my_list[0] = 42
-my_list[1] = 99
+; 2. MAIN EXECUTION FLOW - CALL THE FUNCTION DIRECTLY
+sys.call print_success
 
-; 3. FETCH ELEMENT AT INDEX 1 (Should print 99)
-data.array my_list[1]
-sys.print_int
-
-; 4. HARDWARE PAUSE
+; 3. HARDWARE PAUSE TO ADMIRE THE WORK
 sys.read_key
+
