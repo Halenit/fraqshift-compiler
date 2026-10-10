@@ -456,15 +456,66 @@ for line_num, line in enumerate(lines, 1):
             target_code += f"\npop rax\ncmp rax, {value}\n"
         except (IndexError, ValueError):
             exit()
+    elif line.startswith("sys.inc "):
+        try:
+            parts = [p for p in line.split() if p]
+            var_name = parts[1]
+            if var_name not in symbol_table:
+                print(f"SECURITY ERROR on line {line_num}: Cannot increment undeclared variable '{var_name}'!")
+                exit()
+            offset = symbol_table[var_name]
+            target_code += f"""
+            inc qword [rbp - {offset}]   ; Hyper-optimized inline hardware increment (1 clock cycle)
+            """
+        except IndexError:
+            print(f"Syntax Error on line {line_num}: 'sys.inc' requires a valid variable name!")
+            exit()
+
+    elif line.startswith("sys.dec "):
+        try:
+            parts = [p for p in line.split() if p]
+            var_name = parts[1]
+            if var_name not in symbol_table:
+                print(f"SECURITY ERROR on line {line_num}: Cannot decrement undeclared variable '{var_name}'!")
+                exit()
+            offset = symbol_table[var_name]
+            target_code += f"""
+            dec qword [rbp - {offset}]   ; Hyper-optimized inline hardware decrement (1 clock cycle)
+            """
+        except IndexError:
+            print(f"Syntax Error on line {line_num}: 'sys.dec' requires a valid variable name!")
+            exit()
 
     elif line == "sys.if_eq":
         if_counter += 1
-        if_stack.append(if_counter)
-        target_code += f"jne .if_end_{if_counter}\n"
+        if_stack.append(("if", if_counter))
+        target_code += f"jne .if_false_{if_counter}\n"
+
+    elif line == "sys.else":
+        # Look at the active if-statement on top of the stack
+        if not if_stack or if_stack[-1][0] != "if":
+            print(f"SECURITY ERROR on line {line_num}: 'sys.else' without a matching 'sys.if_eq'!")
+            exit()
+        ctx, cur_id = if_stack.pop()
+        
+        # Open an else-context so if_done knows where to place the final anchor
+        if_stack.append(("else", cur_id))
+        target_code += f"""
+        jmp .if_done_{cur_id}       ; Jump over the else block if the IF statement was true
+    .if_false_{cur_id}:             ; Anchor for the else branch entry node
+        """
 
     elif line == "sys.if_done":
-        current_if = if_stack.pop()
-        target_code += f".if_end_{current_if}:\n"
+        if not if_stack:
+            print(f"SECURITY ERROR on line {line_num}: Missing matching if statement!")
+            exit()
+        ctx, cur_id = if_stack.pop()
+        
+        if ctx == "if":
+            target_code += f".if_false_{cur_id}:\n"
+        elif ctx == "else":
+            target_code += f".if_done_{cur_id}:\n"
+
 
     elif line == "sys.loop":
         loop_counter += 1
