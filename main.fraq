@@ -1,32 +1,30 @@
-;# =========================================================
-;# Copyright (C) 2026  Daniel Halen
+;# ==============================================================================
+;# Copyright (C) 2026  Daniel Halén
+;# 
 ;# This program is free software: you can redistribute it and/or modify
 ;# it under the terms of the GNU General Public License as published by
 ;# the Free Software Foundation, either version 3 of the License, or
 ;# (at your option) any later version.
-;# =========================================================
+;# ==============================================================================
+
 sys.clear
 sys.flush_key
 
-; 1. DECLARE INITIAL VARIABLE AND INCREMENT IT FROM 50 TO 51 DIRECTLY IN RAM
-var test_val = 50
-sys.inc test_val
+; 1. ALLOCATE THREE INDEPENDENT VARIABLE CELLS (SIMULATING THE CHIPS)
+var char_one = 73       ; ASCII for 'I'
+var char_two = 78       ; ASCII for 'N'
+var char_three = 67     ; ASCII for 'C'
 
-; 2. DEFINE RAM DESTINATION POINTER FOR SCREEN ROW 3 (0xB8140 = 753984)
-var screen_ptr = 753984
+; 2. STREAM THE CHARACTERS DIRECTLY VIA REGISTER STACK PUSHES
+data.var char_one
+sys.print_char
 
-; 3. COMPARE TEST_VAL WITH 50
-data.var test_val
-sys.cmp 50
+data.var char_two
+sys.print_char
 
-sys.if_eq
-    ; This block should be SKIPPED because test_val is now 51!
-    *screen_ptr = 65    ; ASCII for 'A'
-sys.else
-    ; KISEL-SUCCESS: The processor jumps straight here!
-    *screen_ptr = 67    ; ASCII for 'C'
-sys.if_done
+data.var char_three
+sys.print_char
 
-; 4. HARDWARE PAUSE
+; 3. HARDWARE PAUSE
 sys.read_key
 
