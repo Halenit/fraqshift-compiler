@@ -10,21 +10,46 @@
 sys.clear
 sys.flush_key
 
-; 1. ALLOCATE THREE INDEPENDENT VARIABLE CELLS (SIMULATING THE CHIPS)
-var char_one = 73       ; ASCII for 'I'
-var char_two = 78       ; ASCII for 'N'
-var char_three = 67     ; ASCII for 'C'
+; 1. PREPARE THE COMPILER BUFFER (LOAD "INC" INTO RAM)
+var char_one = 73       ; 'I'
+var char_two = 78       ; 'N'
+var char_three = 67     ; 'C'
 
-; 2. STREAM THE CHARACTERS DIRECTLY VIA REGISTER STACK PUSHES
+; 2. SÄKRA EN BUFFER POSITION FÖR SKÄRMEN (0xB8000 = 753664)
+var screen_ptr = 753664
+
+; 3. START TOKEN ANALYSIS: CHECK FIRST CHARACTER
 data.var char_one
-sys.print_char
+sys.cmp 73
 
-data.var char_two
-sys.print_char
+sys.if_eq
+    ; FIRST CHARACTER IS 'I'! NOW CHECK SECOND CHARACTER
+    data.var char_two
+    sys.cmp 78
+    
+    sys.if_eq
+        ; SECOND CHARACTER IS 'N'! NOW CHECK THIRD CHARACTER
+        data.var char_three
+        sys.cmp 67
+        
+                sys.if_eq
+            ; SUCCESS: THE PROCESSOR HAS FULLY PARSED THE "INC" TOKEN!
+            ; 1. Write character 'O' (ASCII 79)
+            *screen_ptr = 79
+            ; 2. Advance pointer 1 byte to reach the color cell and write green attribute (10 in decimal = 0x0A)
+            sys.inc screen_ptr
+            *screen_ptr = 10
+        sys.else
 
-data.var char_three
-sys.print_char
+            ; ERROR: Found "IN" but third character was wrong
+            *screen_ptr = 69 ; 'E' for Error
+        sys.if_done
+    sys.else
+        *screen_ptr = 69     ; 'E'
+    sys.if_done
+sys.else
+    *screen_ptr = 69         ; 'E'
+sys.if_done
 
-; 3. HARDWARE PAUSE
+; 4. HARDWARE PAUSE
 sys.read_key
-
