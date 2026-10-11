@@ -21,10 +21,11 @@
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 
 # builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
+# builder2.py - Dedicated Bare-Metal Compiler for Fraqshift OS Kernel (NASM Output)
 import os
 import sys
 
-print("--- FRAQSHIFT OS CORE COMPILER V6.3 (SUBROUTINE ISOLATION ENGINE) ---")
+print("--- FRAQSHIFT OS CORE COMPILER V6.4 (PHASE 9 ENGINE) ---")
 
 source_file = "main.fraq"
 if not os.path.exists(source_file):
@@ -36,7 +37,7 @@ with open(source_file, "r", encoding="utf-8") as f:
 
 # --- 1. LEXER, PARSER & SYMBOL TABLE ---
 compiled_assembly = ""
-compiled_functions = ""  # CRITICAL FIX: Separate function stream to isolate them from boot flow
+compiled_functions = ""  
 strings_data = []
 current_string_index = 0
 
@@ -155,7 +156,6 @@ for line_num, line in enumerate(lines, 1):
     if not line or line.startswith(";"):
         continue
         
-        # --- ROUTE GENERATION BASED ON CONTEXT ---
     target_code = ""
 
     if line.startswith("data.string"):
@@ -228,15 +228,15 @@ for line_num, line in enumerate(lines, 1):
             print(f"Syntax Error on line {line_num}: Invalid array declaration!")
             exit()
 
-            # --- Phase 8: DIRECT CPU REGISTER MAPPING (sys.reg rcx = 66) ---
+    # --- Phase 8: DIRECT CPU REGISTER MAPPING (sys.reg rcx = 66) ---
     elif line.startswith("sys.reg "):
         try:
             parts = [p for p in line.split() if p]
-            reg_name = parts[1].lower()
+            reg_name = parts[1].lower()  # FIX: Target the second token correctly!
             
             valid_registers = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi"]
             if reg_name not in valid_registers:
-                print(f"SECURITY ERROR on line {line_num}: Register '{reg_name}' is invalid or protected!")
+                print(f"SECURITY ERROR on line {line_num}: Register '{reg_name}' is invalid!")
                 exit()
                 
             eq_idx = parts.index("=")
@@ -278,45 +278,103 @@ for line_num, line in enumerate(lines, 1):
             mov rbx, [rbp - {offset}]   ; Load memory address into RBX
             """
             if isinstance(new_value, int):
-                target_code += f"mov rax, {new_value}        ; Load immediate literal\n"
+                target_code += f"            mov rax, {new_value}        ; Load immediate literal\n"
             
-            target_code += f"mov [rbx], {asm_src}               ; Write data directly to RAM address via hardware register!\n"
+            target_code += f"            mov [rbx], {asm_src}               ; Write data directly via register\n"
         except (IndexError, ValueError):
             print(f"Syntax Error on line {line_num}: Invalid raw pointer assignment syntax!")
             exit()
 
-
-    # --- DYNAMIC VARIABLE & ARRAY REASSIGNMENT (Phase 7) ---
     elif "=" in line and not line.startswith("var "):
         try:
             parts = [p for p in line.split() if p]
             eq_idx = parts.index("=")
-            new_value = int(parts[eq_idx + 1])
+            
+                    # Check if right side is a register or integer
+            right_token = parts[eq_idx + 1].lower()
+            is_reg = right_token in ["rax", "rbx", "rcx", "rdx", "rsi", "rdi"]
+            
             left_side = parts[0]
 
             if "[" in left_side and left_side.endswith("]"):
                 var_name = left_side.split("[")[0]
                 array_idx = int(left_side.split("[")[1].replace("]", ""))
                 if var_name not in symbol_table:
+                    print(f"SECURITY ERROR on line {line_num}: Undeclared array '{var_name}'!")
                     exit()
                 base_offset = symbol_table[var_name]
                 element_offset = base_offset - (array_idx * 8)
-                target_code += f"""
-                mov rax, {new_value}
-                mov [rbp - {element_offset}], rax
-                """
+                
+                if is_reg:
+                    target_code += f"            mov [rbp - {element_offset}], {right_token}\n"
+                else:
+                    target_code += f"            mov rax, {int(right_token)}\n            mov [rbp - {element_offset}], rax\n"
             else:
                 var_name = left_side
                 if var_name not in symbol_table:
+                    print(f"SECURITY ERROR on line {line_num}: Undeclared variable '{var_name}'!")
                     exit()
                 offset = symbol_table[var_name]
-                target_code += f"""
-                mov rax, {new_value}
-                mov [rbp - {offset}], rax
-                """
+                
+                if is_reg:
+                    target_code += f"            mov [rbp - {offset}], {right_token}\n"
+                else:
+                    target_code += f"            mov rax, {int(right_token)}\n            mov [rbp - {offset}], rax\n"
         except (IndexError, ValueError):
             print(f"Syntax Error on line {line_num}: Invalid reassignment syntax!")
             exit()
+            
+    # --- Phase 9: PUSH RAW CPU REGISTER TO CALCULATION STACK (data.reg rax) ---
+    elif line.startswith("data.reg "):
+        try:
+            # Clean and split tokens safely
+            parts = [p for p in line.split() if p]
+            reg_name = parts[1].lower()
+            
+            # Architectual verification: Ensure we only push standard general registers
+            valid_registers = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi"]
+            if reg_name not in valid_registers:
+                print(f"SECURITY ERROR on line {line_num}: Cannot push invalid or protected register '{reg_name}'!")
+                exit()
+                
+            # Emit immediate machine code to push the raw register value onto the stack
+            asm_payload = f"""
+            push {reg_name}                   ; Push raw hardware register {reg_name.upper()} directly onto calculation stack
+            """
+            
+            if in_function:
+                compiled_functions += asm_payload
+            else:
+                compiled_assembly += asm_payload
+        except IndexError:
+            print(f"Syntax Error on line {line_num}: 'data.reg' requires a valid register name!")
+            exit()
+
+
+        # --- Phase 9: PEEK VALUE FROM RAW POINTER (data.peek source_ptr) ---
+    elif line.startswith("data.peek "):
+        try:
+            parts = [p for p in line.split() if p]
+            ptr_name = parts[1]
+            if ptr_name not in symbol_table:
+                print(f"SECURITY ERROR on line {line_num}: Pointer '{ptr_name}' undeclared!")
+                exit()
+            offset = symbol_table[ptr_name]
+            
+            asm_payload = f"""
+            mov rbx, [rbp - {offset}]   ; Load memory address
+            mov rax, [rbx]              ; Fetch raw 64-bit character
+            push rax                    ; Push onto calculation stack
+            """
+            
+            if in_function:
+                compiled_functions += asm_payload
+            else:
+                compiled_assembly += asm_payload
+        except IndexError:
+            print(f"Syntax Error on line {line_num}: 'data.peek' requires a valid variable!")
+            exit()
+
 
     elif line.startswith("data.array "):
         try:
@@ -326,13 +384,20 @@ for line_num, line in enumerate(lines, 1):
             array_idx = int(target.split("[")[1].replace("]", ""))
             base_offset = symbol_table[var_name]
             element_offset = base_offset - (array_idx * 8)
-            target_code += f"""
+            
+            asm_payload = f"""
             mov rax, [rbp - {element_offset}]
             push rax
             """
+            
+            if in_function:
+                compiled_functions += asm_payload
+            else:
+                compiled_assembly += asm_payload
         except (IndexError, ValueError):
-            print(f"Syntax Error on line {line_num}: Invalid data.array format!")
+            print(f"Syntax Error on line {line_num}: Invalid data.array layout!")
             exit()
+
 
     elif line.startswith("func void "):
         try:
@@ -347,7 +412,7 @@ for line_num, line in enumerate(lines, 1):
     elif line == "func_done":
         if not in_function:
             exit()
-        compiled_functions += "\nret\n"
+        compiled_functions += "\n            ret\n"
         in_function = False
         continue
 
@@ -355,35 +420,54 @@ for line_num, line in enumerate(lines, 1):
         try:
             parts = [p for p in line.split() if p]
             func_name = parts[1]
-            target_code += f"\ncall {func_name}\n"
+            
+            asm_payload = f"""
+            call {func_name}            ; Jump to function entry node
+            """
+            
+            if in_function:
+                compiled_functions += asm_payload
+            else:
+                compiled_assembly += asm_payload
         except IndexError:
             exit()
 
-    elif line.startswith("data.var"):
+
+    elif line.startswith("data.var "):
         try:
             parts = [p for p in line.split() if p]
             var_name = parts[1]
             offset = symbol_table[var_name]
-            target_code += f"""
+            asm_payload = f"""
             mov rax, [rbp - {offset}]
             push rax
             """
+            if in_function:
+                compiled_functions += asm_payload
+            else:
+                compiled_assembly += asm_payload
         except IndexError:
             exit()
 
-    elif line.startswith("data.int"):
+
+    elif line.startswith("data.int "):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            target_code += f"""
+            asm_payload = f"""
             mov rax, {value}
             push rax
             """
+            if in_function:
+                compiled_functions += asm_payload
+            else:
+                compiled_assembly += asm_payload
         except (IndexError, ValueError):
             exit()
 
+
     elif line == "sys.flush_key":
-        target_code += """
+        asm_payload = """
     .flush_loop:
         in al, 0x64
         test al, 0x01
@@ -392,9 +476,14 @@ for line_num, line in enumerate(lines, 1):
         jmp .flush_loop
     .flush_done:
         """
+        if in_function:
+            compiled_functions += asm_payload
+        else:
+            compiled_assembly += asm_payload
+
 
     elif line == "sys.read_key":
-        target_code += """
+        asm_payload = """
     .wait_for_key:
         in al, 0x64
         test al, 0x01
@@ -403,10 +492,24 @@ for line_num, line in enumerate(lines, 1):
         movzx rax, al
         push rax
         """
+        if in_function:
+            compiled_functions += asm_payload
+        else:
+            compiled_assembly += asm_payload
+
+    # --- Phase 9: POP AND DISCARD VALUE FROM STACK (sys.pop) ---
+    elif line == "sys.pop":
+        asm_payload = """
+        pop rax                         ; Discard the top stack value to maintain balance
+        """
+        if in_function:
+            compiled_functions += asm_payload
+        else:
+            compiled_assembly += asm_payload
 
     elif line == "sys.clear":
         clear_counter += 1
-        target_code += f"""
+        asm_payload = f"""
         mov rdi, 0xB8000
         mov rcx, 2000
         mov ax, 0x0720
@@ -416,12 +519,35 @@ for line_num, line in enumerate(lines, 1):
         loop .vga_clear_loop_{clear_counter}
         mov rdi, 0xB8000
         """
+        if in_function:
+            compiled_functions += asm_payload
+        else:
+            compiled_assembly += asm_payload
+
+
+    elif line.startswith("sys.inc "):
+        try:
+            parts = [p for p in line.split() if p]
+            var_name = parts[1]
+            offset = symbol_table[var_name]
+            target_code += f"            inc qword [rbp - {offset}]\n"
+        except IndexError:
+            exit()
+
+    elif line.startswith("sys.dec "):
+        try:
+            parts = [p for p in line.split() if p]
+            var_name = parts[1]
+            offset = symbol_table[var_name]
+            target_code += f"            dec qword [rbp - {offset}]\n"
+        except IndexError:
+            exit()
 
     elif line.startswith("sys.add"):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            target_code += f"\npop rax\nadd rax, {value}\npush rax\n"
+            target_code += f"\n            pop rax\n            add rax, {value}\n            push rax\n"
         except (IndexError, ValueError):
             exit()
 
@@ -429,7 +555,7 @@ for line_num, line in enumerate(lines, 1):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            target_code += f"\npop rax\nsub rax, {value}\npush rax\n"
+            target_code += f"\n            pop rax\n            sub rax, {value}\n            push rax\n"
         except (IndexError, ValueError):
             exit()
 
@@ -437,7 +563,7 @@ for line_num, line in enumerate(lines, 1):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            target_code += f"\npop rax\nmov rbx, {value}\nimul rax, rbx\npush rax\n"
+            target_code += f"\n            pop rax\n            mov rbx, {value}\n            imul rax, rbx\n            push rax\n"
         except (IndexError, ValueError):
             exit()
 
@@ -445,7 +571,7 @@ for line_num, line in enumerate(lines, 1):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            target_code += f"\npop rax\nmov rbx, {value}\nxor rdx, rdx\nidiv rbx\npush rax\n"
+            target_code += f"\n            pop rax\n            mov rbx, {value}\n            xor rdx, rdx\n            idiv rbx\n            push rax\n"
         except (IndexError, ValueError):
             exit()
 
@@ -453,117 +579,73 @@ for line_num, line in enumerate(lines, 1):
         try:
             parts = [p for p in line.split() if p]
             value = int(parts[1])
-            target_code += f"\npop rax\ncmp rax, {value}\n"
+            target_code += f"\n            pop rax\n            cmp rax, {value}\n"
         except (IndexError, ValueError):
-            exit()
-    elif line.startswith("sys.inc "):
-        try:
-            parts = [p for p in line.split() if p]
-            var_name = parts[1]
-            if var_name not in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Cannot increment undeclared variable '{var_name}'!")
-                exit()
-            offset = symbol_table[var_name]
-            target_code += f"""
-            inc qword [rbp - {offset}]   ; Hyper-optimized inline hardware increment (1 clock cycle)
-            """
-        except IndexError:
-            print(f"Syntax Error on line {line_num}: 'sys.inc' requires a valid variable name!")
-            exit()
-
-    elif line.startswith("sys.dec "):
-        try:
-            parts = [p for p in line.split() if p]
-            var_name = parts[1]
-            if var_name not in symbol_table:
-                print(f"SECURITY ERROR on line {line_num}: Cannot decrement undeclared variable '{var_name}'!")
-                exit()
-            offset = symbol_table[var_name]
-            target_code += f"""
-            dec qword [rbp - {offset}]   ; Hyper-optimized inline hardware decrement (1 clock cycle)
-            """
-        except IndexError:
-            print(f"Syntax Error on line {line_num}: 'sys.dec' requires a valid variable name!")
             exit()
 
     elif line == "sys.if_eq":
         if_counter += 1
         if_stack.append(("if", if_counter))
-        target_code += f"jne .if_false_{if_counter}\n"
+        target_code += f"            jne .if_false_{if_counter}\n"
 
     elif line == "sys.else":
-        # Look at the active if-statement on top of the stack
-        if not if_stack or if_stack[-1][0] != "if":
-            print(f"SECURITY ERROR on line {line_num}: 'sys.else' without a matching 'sys.if_eq'!")
-            exit()
         ctx, cur_id = if_stack.pop()
-        
-        # Open an else-context so if_done knows where to place the final anchor
         if_stack.append(("else", cur_id))
-        target_code += f"""
-        jmp .if_done_{cur_id}       ; Jump over the else block if the IF statement was true
-    .if_false_{cur_id}:             ; Anchor for the else branch entry node
-        """
+        target_code += f"            jmp .if_done_{cur_id}\n.if_false_{cur_id}:\n"
 
     elif line == "sys.if_done":
-        if not if_stack:
-            print(f"SECURITY ERROR on line {line_num}: Missing matching if statement!")
-            exit()
         ctx, cur_id = if_stack.pop()
-        
         if ctx == "if":
             target_code += f".if_false_{cur_id}:\n"
-        elif ctx == "else":
+        else:
             target_code += f".if_done_{cur_id}:\n"
-
 
     elif line == "sys.loop":
         loop_counter += 1
         loop_stack.append(loop_counter)
-        target_code += f"\npop rcx\nxor rbx, rbx\n.loop_start_{loop_counter}:\ncmp rbx, rcx\njge .loop_end_{loop_counter}\npush rcx\npush rbx\n"
+        target_code += f"\n            pop rcx\n            xor rbx, rbx\n.loop_start_{loop_counter}:\n            cmp rbx, rcx\n            jge .loop_end_{loop_counter}\n            push rcx\n            push rbx\n"
 
     elif line == "sys.loop_end":
         current_loop = loop_stack.pop()
-        target_code += f"\npop rbx\npop rcx\ninc rbx\njmp .loop_start_{current_loop}\n.loop_end_{current_loop}:\n"
+        target_code += f"\n            pop rbx\n            pop rcx\n            inc rbx\n            jmp .loop_start_{current_loop}\n.loop_end_{current_loop}:\n"
 
     elif line == "sys.print_char":
-        target_code += "\npop rax\nmov [rdi], al\nmov byte [rdi+1], 0x0A\nadd rdi, 2\n"
+        target_code += "\n            pop rax\n            mov [rdi], al\n            mov byte [rdi+1], 0x0A\n            add rdi, 2\n"
 
     elif line == "sys.print_int":
         target_code += """
-        pop rax
-        sub rsp, 32
-        mov rcx, rsp
-        add rcx, 32
-        mov rbx, 10
-    .convert_loop_os:
-        xor rdx, rdx
-        idiv rbx
-        add dl, 0x30
-        dec rcx
-        mov [rcx], dl
-        test rax, rax
-        jnz .convert_loop_os
-        mov rdi, 0xB8000
-        mov rdx, rsp
-        add rdx, 32
-    .vga_print_loop:
-        cmp rcx, rdx
-        je .vga_print_done
-        mov al, [rcx]
-        mov [rdi], al
-        mov byte [rdi+1], 0x0A
-        add rdi, 2
-        inc rcx
-        jmp .vga_print_loop
-    .vga_print_done:
-        add rsp, 32
+            pop rax
+            sub rsp, 32
+            mov rcx, rsp
+            add rcx, 32
+            mov rbx, 10
+        .convert_loop_os:
+            xor rdx, rdx
+            idiv rbx
+            add dl, 0x30
+            dec rcx
+            mov [rcx], dl
+            test rax, rax
+            jnz .convert_loop_os
+            mov rdi, 0xB8000
+            mov rdx, rsp
+            add rdx, 32
+        .vga_print_loop:
+            cmp rcx, rdx
+            je .vga_print_done
+            mov al, [rcx]
+            mov [rdi], al
+            mov byte [rdi+1], 0x0A
+            add rdi, 2
+            inc rcx
+            jmp .vga_print_loop
+        .vga_print_done:
+            add rsp, 32
         """
     else:
         print(f"Syntax Error on line {line_num}: Unknown command '{line}'")
         exit()
 
-    # Append to the right code section stream
     if in_function:
         compiled_functions += target_code
     else:
@@ -578,10 +660,8 @@ compiled_assembly += """
     jmp .kernel_halt
 """
 
-# --- INJECT ALL SAFE SUBROUTINES AT THE ABSOLUTE BOTTOM ---
 compiled_assembly += compiled_functions
 
-# --- APPEND DATA SECTION FOR STRINGS & PAD TOTAL IMAGE ---
 if strings_data:
     compiled_assembly += "\nsection .data\n"
     for idx, text in strings_data:
@@ -600,3 +680,4 @@ print("=========================================================")
 print(f"-> STEP 1 SUCCESSFUL: Generated Two-Stage '{output_asm_file}'")
 print("=========================================================")
 
+    

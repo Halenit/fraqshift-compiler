@@ -13,22 +13,20 @@ sys.flush_key
 ; ==============================================================================
 ; 1. MAIN PROGRAM EXECUTION FLOW
 ; ==============================================================================
-var char_one = 73       ; 'I'
-var char_two = 78       ; 'N'
-var char_three = 67     ; 'C'
+var addr_one = 327680       ; Adress för 'I'
+var addr_two = 327936       ; Adress för 'N'
+var addr_three = 328192     ; Adress för 'C'
 
-; Call our hardware tokenizer function safely
+; Skriv bokstäverna direkt till sina isolerade globala RAM-celler
+*addr_one = 73              ; 'I'
+*addr_two = 78              ; 'N'
+*addr_three = 67            ; 'C'
+
+; Anropa vår fristående hårdvaru-tokenizer
 sys.call tokenize_word
 
-; STACK PROTECTION FIX:
-; Funktionen sparade Token ID i CPU-registret RAX för att skydda stacken.
-; Vi flyttar nu upp värdet från RAX till stacken via beräkningsregistret så vi kan printa det!
-sys.reg rbx = 1
-data.var char_one      ; En dummy-push bara för att förbereda sys.print_int,
-                       ; i nästa steg bygger vi en ren 'data.reg rax' token!
-
-; För att se vårt resultat nu kollar vi helt enkelt om RAX är 1, och ritar en grön 1:a!
-data.int 1
+; Hämta det returnerade Token ID direkt från det skyddade RBX-registret och printa!
+data.reg rbx
 sys.print_int
 
 ; Hardware pause
@@ -36,42 +34,37 @@ sys.read_key
 
 
 ; ==============================================================================
-; 2. SUBROUTINE: TOKENIZE_WORD (Phase 9 Core Engine - Stack Safe Edition)
+; 2. SUBROUTINE: TOKENIZE_WORD (Flagg-säkrad Kisel-Utvärderare för Fas 9)
 ; ==============================================================================
 func void tokenize_word
-    ; Check first character
-    data.var char_one
-    sys.cmp 73
+    var ptr_one = 327680
+    var ptr_two = 327936
+    var ptr_three = 328192
     
+    ; --- KOLLA BOKSTAV 1 ('I' = 73) ---
+    data.peek ptr_one
+    sys.cmp 73
     sys.if_eq
-        ; First character is 'I', check second
-        data.var char_two
-        sys.cmp 78
+        ; CRITICAL FIX: Inga sys.pop här som förstör flaggregistret!
         
+        ; --- KOLLA BOKSTAV 2 ('N' = 78) ---
+        data.peek ptr_two
+        sys.cmp 78
         sys.if_eq
-            ; Second character is 'N', check third
-            data.var char_three
-            sys.cmp 67
             
+            ; --- KOLLA BOKSTAV 3 ('C' = 67) ---
+            data.peek ptr_three
+            sys.cmp 67
             sys.if_eq
-                ; MATCH FOUND: "INC"! Load ID 1 safely into RAX register instead of stack!
-                sys.reg rax = 1
+                ; FULLSTÄNDIG MATCH: Texten i globala RAM var exakt "INC"! Sätt ID 1 i RBX!
+                sys.reg rbx = 1
             sys.else
-                sys.reg rax = 99
+                sys.reg rbx = 99
             sys.if_done
         sys.else
-            sys.reg rax = 99
+            sys.reg rbx = 99
         sys.if_done
     sys.else
-        data.var char_one
-        sys.cmp 68
-        
-        sys.if_eq
-            sys.reg rax = 2
-        sys.else
-            sys.reg rax = 99
-            
-        sys.if_done
+        sys.reg rbx = 99
     sys.if_done
 func_done
-
