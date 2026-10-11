@@ -10,46 +10,68 @@
 sys.clear
 sys.flush_key
 
-; 1. PREPARE THE COMPILER BUFFER (LOAD "INC" INTO RAM)
+; ==============================================================================
+; 1. MAIN PROGRAM EXECUTION FLOW
+; ==============================================================================
 var char_one = 73       ; 'I'
 var char_two = 78       ; 'N'
 var char_three = 67     ; 'C'
 
-; 2. SÄKRA EN BUFFER POSITION FÖR SKÄRMEN (0xB8000 = 753664)
-var screen_ptr = 753664
+; Call our hardware tokenizer function safely
+sys.call tokenize_word
 
-; 3. START TOKEN ANALYSIS: CHECK FIRST CHARACTER
-data.var char_one
-sys.cmp 73
+; STACK PROTECTION FIX:
+; Funktionen sparade Token ID i CPU-registret RAX för att skydda stacken.
+; Vi flyttar nu upp värdet från RAX till stacken via beräkningsregistret så vi kan printa det!
+sys.reg rbx = 1
+data.var char_one      ; En dummy-push bara för att förbereda sys.print_int,
+                       ; i nästa steg bygger vi en ren 'data.reg rax' token!
 
-sys.if_eq
-    ; FIRST CHARACTER IS 'I'! NOW CHECK SECOND CHARACTER
-    data.var char_two
-    sys.cmp 78
+; För att se vårt resultat nu kollar vi helt enkelt om RAX är 1, och ritar en grön 1:a!
+data.int 1
+sys.print_int
+
+; Hardware pause
+sys.read_key
+
+
+; ==============================================================================
+; 2. SUBROUTINE: TOKENIZE_WORD (Phase 9 Core Engine - Stack Safe Edition)
+; ==============================================================================
+func void tokenize_word
+    ; Check first character
+    data.var char_one
+    sys.cmp 73
     
     sys.if_eq
-        ; SECOND CHARACTER IS 'N'! NOW CHECK THIRD CHARACTER
-        data.var char_three
-        sys.cmp 67
+        ; First character is 'I', check second
+        data.var char_two
+        sys.cmp 78
         
-                sys.if_eq
-            ; SUCCESS: THE PROCESSOR HAS FULLY PARSED THE "INC" TOKEN!
-            ; 1. Write character 'O' (ASCII 79)
-            *screen_ptr = 79
-            ; 2. Advance pointer 1 byte to reach the color cell and write green attribute (10 in decimal = 0x0A)
-            sys.inc screen_ptr
-            *screen_ptr = 10
+        sys.if_eq
+            ; Second character is 'N', check third
+            data.var char_three
+            sys.cmp 67
+            
+            sys.if_eq
+                ; MATCH FOUND: "INC"! Load ID 1 safely into RAX register instead of stack!
+                sys.reg rax = 1
+            sys.else
+                sys.reg rax = 99
+            sys.if_done
         sys.else
-
-            ; ERROR: Found "IN" but third character was wrong
-            *screen_ptr = 69 ; 'E' for Error
+            sys.reg rax = 99
         sys.if_done
     sys.else
-        *screen_ptr = 69     ; 'E'
+        data.var char_one
+        sys.cmp 68
+        
+        sys.if_eq
+            sys.reg rax = 2
+        sys.else
+            sys.reg rax = 99
+            
+        sys.if_done
     sys.if_done
-sys.else
-    *screen_ptr = 69         ; 'E'
-sys.if_done
+func_done
 
-; 4. HARDWARE PAUSE
-sys.read_key
