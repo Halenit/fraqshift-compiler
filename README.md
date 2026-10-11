@@ -1,6 +1,7 @@
 # Fraqshift
 
 [![License: GPL v3](https://shields.io)](https://gnu.org)
+[![Discord](https://shields.io)](https://discord.gg/t3wbbfYN5T)
 
 Fraqshift is a high-performance, low-level systems programming language engineered to combine modern data syntax with bare-metal hardware control. It compiles code directly into native x86-64 machine instructions for a custom, standalone Operating System ecosystem.
 
