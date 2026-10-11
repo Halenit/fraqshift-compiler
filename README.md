@@ -73,7 +73,15 @@ To design a compiler that executes faster and cleaner than C/C++ and Python, Fra
 - [x] **Phase 6: Hardware Flow Control** — Deterministic loop blocks (`sys.loop`), PS/2 keyboard buffer flushing, and a robust multi-stage bootloader architecture.
 - [x] **Phase 7 (Current): Memory Matrix & Subroutines** — Static 64-bit array allocation, dynamic element indexing, and bare-metal function blocks (`func void`) using native CPU calling conventions.
 - [x] **Phase 8: Pointer Dereferencing & Registers** — Direct raw memory pointers, high-speed RAM streaming, and manual CPU register optimization mapping (`sys.reg`) to maximize execution speeds.
-- [ ] **Phase 9: Single-Pass Tokenizer & Self-Hosting Execution** — Writing the final compilation engine inside Fraqshift itself. The compiler reads `main.fraq` using text-arrays, outputs pure machine code without python/linker dependencies, and achieves 100% self-hosting supremacy inside Fraqshift OS.
+- [x] **Phase 9: Single-Pass Tokenizer & Flag-Safe Evaluation**
+    *   Implemented raw memory character streaming via `data.peek` and direct CPU register extraction (`data.reg rbx`).
+    *   Designed a stack-safe, flag-protected nested conditional engine inside `func void` subroutines.
+    *   Successfully parsed the first live hardware token (`INC`) from global RAM inside QEMU, emitting verified green token IDs without any runtime overhead.
+- [ ] **Phase 10: Full Self-Hosting & Bootstrapping Compiler Supremacy** 🔵 (ACTIVE)
+    *   Expand the static tokenizer into a dynamic `sys.loop` space/newline text-splitter.
+    *   Implement the bare-metal Symbol Table inside a global `var.array` memory block to track variables and stack offsets.
+    *   Write the final binary machine code generator (`*output_ptr = byte`) directly into `main.fraq`.
+    *   Execute the historical bootstrapping phase: Compile the Fraqshift compiler using `builder2.py` one final time, then cut the umbilical cord to Python forever.
 
 
 ## License
