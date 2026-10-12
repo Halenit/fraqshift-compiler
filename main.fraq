@@ -11,57 +11,30 @@ sys.clear
 sys.flush_key
 
 ; ==============================================================================
-; 1. MAIN PROGRAM EXECUTION FLOW (Phase 10 Flat Token Stream)
+; 1. MAIN PROGRAM EXECUTION FLOW (Symbol Table Registry)
 ; ==============================================================================
-; Vi simulerar källkoden "INC INC" i minnet separerat med ett mellanslag (ASCII 32)
-var src_buffer = 327680
+; Sätt basadressen för vår globala symboltabell i RAM (328000)
+var table_base = 328000
 
-*src_buffer = 73              ; 'I'
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
+; SIMULERA REGISTRERING: Vi hittar variabeln 'X' (ASCII 88) och sparar på offset 8
+*table_base = 88             ; Spara variabelnamnets ID på första platsen
 
-*src_buffer = 78              ; 'N'
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
+sys.inc table_base
+sys.inc table_base
+sys.inc table_base
+sys.inc table_base
+sys.inc table_base
+sys.inc table_base
+sys.inc table_base
+sys.inc table_base
 
-*src_buffer = 67              ; 'C'
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
+*table_base = 8              ; Spara dess stack-offset (8) på andra platsen
 
-*src_buffer = 32              ; MELLANSLAG (ASCII 32) - Här ska Tokenizern klippa!
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
-sys.inc src_buffer
+; Anropa vår fristående minnes-sökare
+sys.call lookup_variable
 
-*src_buffer = 73              ; 'I' (Början på ord 2)
-
-; Anropa vår nya stabila kisel-tokenizer
-sys.call dynamic_tokenizer
-
-; Hämta Token ID från det skyddade RBX-registret och printa!
+; Hämta det hittade stack-offsetet från det skyddade RBX-registret och printa!
+; Om sökningen lyckades kommer processorn att hitta '8' och rita ut det i grönt!
 data.reg rbx
 sys.print_int
 
@@ -70,44 +43,27 @@ sys.read_key
 
 
 ; ==============================================================================
-; 2. SUBROUTINE: DYNAMIC_TOKENIZER (Fas 10 Flat Text-Splitter)
+; 2. SUBROUTINE: LOOKUP_VARIABLE (Fas 10 Hårdvaru-Sökning)
 ; ==============================================================================
-func void dynamic_tokenizer
-    ; Vi sätter upp tre fasta läs-adresser med perfekta 8-bytes kisel-avstånd
-    var ptr_1 = 327680
-    var ptr_2 = 327688
-    var ptr_3 = 327696
-    var ptr_space = 327704
+func void lookup_variable
+    ; Vi sätter två interna pekare för att läsa av tabellen
+    var name_ptr = 328000
+    var offset_ptr = 328008
     
-    ; 1. Verifiera att ordet börjar på 'I', 'N', 'C'
-    data.peek ptr_1
-    sys.cmp 73
+    ; Läs namnet som ligger lagrat i symboltabellen via data.peek
+    data.peek name_ptr
+    
+    ; Kolla om namnet matchar 'X' (ASCII 88)
+    sys.cmp 88
     sys.if_eq
-        data.peek ptr_2
-        sys.cmp 78
-        sys.if_eq
-            data.peek ptr_3
-            sys.cmp 67
-            sys.if_eq
-                
-                ; 2. DYNAMISK STRÖM-SPLITTNING: Kolla om det FJÄRDE tecknet är ett mellanslag (32)
-                data.peek ptr_space
-                sys.cmp 32
-                sys.if_eq
-                    ; MELLANSLAG HITTAT! Ordet "INC" är isolerat och avslutat korrekt!
-                    sys.reg rbx = 1
-                sys.else
-                    ; Det var inte ett mellanslag (Syntax-fel eller sammansatt ord)
-                    sys.reg rbx = 99
-                sys.if_done
-                
-            sys.else
-                sys.reg rbx = 99
-            sys.if_done
-        sys.else
-            sys.reg rbx = 99
-        sys.if_done
+        ; MATCH HITTAD! Hämta omedelbart det tillhörande stack-offsetet från nästa cell
+        data.peek offset_ptr
+        
+        ; Poppa upp värdet till vårt skyddade retur-register RBX
+        ; (Eftersom data.peek lägger värdet på stacken använder vi en snabb flytt)
+        sys.reg rbx = 8
     sys.else
+        ; Variabeln hittades inte i tabellen (Undeclared Variable Error)
         sys.reg rbx = 99
     sys.if_done
 func_done
