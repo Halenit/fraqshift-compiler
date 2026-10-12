@@ -8,6 +8,15 @@ start_bootloader:
     mov ss, ax
     mov sp, 0x7C00          ; Set up secure stack below bootloader
 
+    ; ==========================================================================
+    ; PHASE 11 (STEG A): INITIALIZE VESA BIOS EXTENSIONS (VBE) GRAFIKLÄGE
+    ; ==========================================================================
+    mov ax, 0x4F02          ; VBE-funktion: Sätt grafikläge
+    mov bx, 0x4117          ; Läges-ID: 1024x768 @ 32-bit färg med Linear Framebuffer (0x117 + 0x4000)
+    int 0x10                ; Anropa BIOS videotjänst
+    cmp ax, 0x004F          ; Svarade grafikkortet med "Success" (0x004F)?
+    jne .disk_error         ; Om inte, hoppa till felmeddelande och stanna
+
     ; --- Load Stage 2 Kernel from Hard Disk ---
     mov ah, 0x02            ; BIOS Read Sectors function
     mov al, 15              ; Load 15 sectors (7.5 KB of code space)
@@ -30,6 +39,7 @@ start_bootloader:
     mov dword [0x9000], 0xA003
     mov dword [0xA000], 0xB003
     mov dword [0xB000], 0x0083  ; Identity map first 2MB
+    mov dword [0xB008], 0xFD000083 ; Map the VESA Framebuffer area safely into 64-bit space
 
     ; --- Enable PAE ---
     mov eax, 10100000b
@@ -110,6 +120,109 @@ kernel_main:
         in al, 0x60
         jmp .flush_loop
     .flush_done:
+
+    ; ==========================================================================
+    ; PHASE 11 (STEG C): THE COMPLETE INTERACTIVE GRAPHICAL TERMINAL
+    ; ==========================================================================
+    mov rdi, 0x200000
+    add rdi, 410000             ; Startposition på skärmen (X=100, Y=100)
+
+.terminal_input_loop:
+    in al, 0x64                 ; Läs statusporten för PS/2-kontrollern
+    test al, 0x01               ; Har en tangent tryckts ned?
+    jz .terminal_input_loop
+    
+    in al, 0x60                 ; HÄMTA HÅRDVARU-SCANKODEN
+
+    ; --- 1. KOLLA ENTER (Scankod 0x1C) ---
+    cmp al, 0x1C
+    je .handle_enter
+
+    ; --- 2. KOLLA BACKSPACE (Scankod 0x0E) ---
+    cmp al, 0x0E
+    je .handle_backspace
+
+    ; --- 3. KOLLA MELLANSLAG (Scankod 0x39) ---
+    cmp al, 0x39
+    je .handle_space
+
+    ; --- 4. KOLLA BOKSTAVEN 'A' (Scankod 0x1E) ---
+    cmp al, 0x1E
+    jne .terminal_input_loop    ; Om det inte var något av detta, vänta på nästa tangent
+
+    ; --- RITA BOKSTAVEN 'A' ---
+    push rdi
+    mov r8, 0x66667E66663C1800  ; Little Endian bitmapp för 'A'
+    mov ecx, 8
+.interactive_row_loop:
+    push rcx
+    mov bl, r8b
+    mov ecx, 8
+.interactive_pixel_loop:
+    shl bl, 1
+    jnc .interactive_skip_pixel
+    mov dword [rdi], 0x00FFFF00 ; Ljusblå pixel
+.interactive_skip_pixel:
+    add rdi, 4
+    loop .interactive_pixel_loop
+    add rdi, (1024 * 4) - 32
+    shr r8, 8                  ; Vi rensar bort detta om NASM klagar, men det är fixat nu!
+    pop rcx
+    loop .interactive_row_loop
+    pop rdi
+    
+    add rdi, 48                 ; Flytta markören 12 pixlar till höger (12 * 4 = 48 bytes)
+    jmp .clear_buffer_wait
+
+; --- HARDWARE HANDLERS FÖR SPECIAL-TANGENTER ---
+
+.handle_enter:
+    ; 1. Hoppa ner exakt 16 pixlar vertikalt (16 rader * 1024 pixlar * 4 bytes = 65536 bytes)
+    add rdi, 65536
+
+    ; 2. SÄKERT VÄNSTER-CHASSI: Vi räknar ut exakt var den nya raden startar i minnet,
+    ; och tvingar markören till en perfekt vänstermarginal (X = 100 pixlar in på skärmen).
+    ; Vi tar den nuvarande adressen, drar av resten från radbredden, och lägger till marginalen (100 * 4 = 400 bytes)
+    sub rdi, 0x200000           ; Dra av basadressen tillfälligt för ren rad-matte
+    mov rax, rdi
+    xor rdx, rdx
+    mov rcx, 4096               ; En hel skärmrad är 4096 bytes (1024 * 4)
+    div rcx                     ; RAX = Nuvarande radnummer, RDX = Hur långt till höger vi var
+    sub rdi, rdx                ; Dra av nuvarande X-position så vi står exakt vid radens absoluta start!
+    add rdi, 0x200000           ; Lägg tillbaka vår säkrade virtuella basadress
+    
+    add rdi, 400                ; Lägg till vår snygga och spikraka vänstermarginal (X=100)!
+    jmp .clear_buffer_wait
+
+.handle_space:
+    add rdi, 48                 ; Ett mellanslag flyttar bara markören 12 pixlar åt höger utan att rita!
+    jmp .clear_buffer_wait
+
+.handle_backspace:
+    sub rdi, 48                 ; Flytta markören 12 pixlar TILLBAKA åt vänster
+    
+    ; SUDDA UT DET GAMLA TECKNET: Vi ritar en tom svart box (0x00000000) över det gamla tecknet
+    push rdi
+    mov ecx, 16                 ; 16 rader hög radering
+.erase_row_loop:
+    push rcx
+    mov ecx, 12                 ; 12 pixlar bred radering
+.erase_pixel_loop:
+    mov dword [rdi], 0x00000000 ; Skriv rent kolsvart minne (Radera!)
+    add rdi, 4
+    loop .erase_pixel_loop
+    add rdi, (1024 * 4) - 48    ; Hoppa ner till nästa rad
+    pop rcx
+    loop .erase_row_loop
+    pop rdi
+    jmp .clear_buffer_wait
+
+.clear_buffer_wait:
+    in al, 0x64
+    test al, 0x01
+    jz .terminal_input_loop
+    in al, 0x60
+    jmp .clear_buffer_wait
         
             mov rax, 327680
             mov [rbp - 8], rax
