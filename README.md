@@ -76,10 +76,24 @@ Fraqshift eliminates legacy bloat and compilation layers through a clean, multi-
     *   Implemented the bare-metal Symbol Table inside global RAM (`328000`) to track offsets.
     *   Designed the final raw machine code emitter (`*output_ptr = rax`) utilizing standard x86-64 calling conventions.
     *   Successfully executed the historical bootstrapping sequence, allowing Fraqshift to compile and run on pure kisel without a single line of Python.
-- [ ] **Phase 11: VBE Graphics & High-Speed GUI Architecture**  (ACTIVE)
-    *   Transition the 64-bit Stage 2 Bootloader from text-mode to a high-resolution VESA BIOS Extensions (VBE) linear framebuffer.
-    *   Utilize CPU AVX/SSE vector instructions to execute blazing fast non-temporal zero-copy pixel manipulation (reaching speeds up to 50+ GB/s).
-    *   Implement an independent Master Compositor loop to draw fluid, flicker-free hardware windows and application layers at 60Hz.
+      
+- [ ] **Phase 11: Human Interface & Graphical Terminal**  (ACTIVE)
+    *   Transition the 64-bit Stage 2 Bootloader from legacy text-mode to an advanced VESA BIOS Extensions (VBE) linear framebuffer (1024x768 @ 32-bit color).
+    *   Develop a ultra-low-overhead, hardware-accelerated Bitmap Font Engine utilizing native CPU register streaming.
+    *   Build a standalone bare-metal Graphical Terminal and command interpreter (`sys.call dynamic_tokenizer`) to interface directly with keyboard interrupts.
+
+- [ ] **Phase 12: Storage Layer & Bare-Metal File System**  (UPCOMING)
+    *   Write a native IDE/ATA hard disk controller driver using direct processor hardware I/O ports (`in`/`out`).
+    *   Implement a robust FAT16/FAT32 file system driver to handle raw file allocation, reading, and writing directly on hardware sectors.
+
+- [ ] **Phase 13: Deterministic Multitasking & Ring 3 Security**  (UPCOMING)
+    *   Build a high-speed hardware Task Scheduler (Context Switcher) driven by PIT timer interrupts.
+    *   Implement x86-64 Ring 3 (User Mode) isolation, enforcing hardware-level memory clipping to protect the core kernel from application-level failures.
+
+- [ ] **Phase 14: The Internet Revolution & Single-Pass Netstack**  (UPCOMING)
+    *   Develop a native network interface card (NIC) driver for the Intel e1000 Gigabit Ethernet controller using Memory-Mapped I/O (MMIO).
+    *   Code a zero-copy, single-pass network stack handling ARP, IPv4/IPv6, UDP, and TCP protocols directly inside the CPU registers.
+    *   Achieve standalone network connectivity, downloading and rendering remote resources entirely on bare metal.
 
 ## License
 
