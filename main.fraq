@@ -11,21 +11,57 @@ sys.clear
 sys.flush_key
 
 ; ==============================================================================
-; 1. MAIN PROGRAM EXECUTION FLOW
+; 1. MAIN PROGRAM EXECUTION FLOW (Phase 10 Flat Token Stream)
 ; ==============================================================================
-var addr_one = 327680       ; Adress för 'I'
-var addr_two = 327936       ; Adress för 'N'
-var addr_three = 328192     ; Adress för 'C'
+; Vi simulerar källkoden "INC INC" i minnet separerat med ett mellanslag (ASCII 32)
+var src_buffer = 327680
 
-; Skriv bokstäverna direkt till sina isolerade globala RAM-celler
-*addr_one = 73              ; 'I'
-*addr_two = 78              ; 'N'
-*addr_three = 67            ; 'C'
+*src_buffer = 73              ; 'I'
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
 
-; Anropa vår fristående hårdvaru-tokenizer
-sys.call tokenize_word
+*src_buffer = 78              ; 'N'
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
 
-; Hämta det returnerade Token ID direkt från det skyddade RBX-registret och printa!
+*src_buffer = 67              ; 'C'
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+
+*src_buffer = 32              ; MELLANSLAG (ASCII 32) - Här ska Tokenizern klippa!
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+
+*src_buffer = 73              ; 'I' (Början på ord 2)
+
+; Anropa vår nya stabila kisel-tokenizer
+sys.call dynamic_tokenizer
+
+; Hämta Token ID från det skyddade RBX-registret och printa!
 data.reg rbx
 sys.print_int
 
@@ -34,30 +70,37 @@ sys.read_key
 
 
 ; ==============================================================================
-; 2. SUBROUTINE: TOKENIZE_WORD (Flagg-säkrad Kisel-Utvärderare för Fas 9)
+; 2. SUBROUTINE: DYNAMIC_TOKENIZER (Fas 10 Flat Text-Splitter)
 ; ==============================================================================
-func void tokenize_word
-    var ptr_one = 327680
-    var ptr_two = 327936
-    var ptr_three = 328192
+func void dynamic_tokenizer
+    ; Vi sätter upp tre fasta läs-adresser med perfekta 8-bytes kisel-avstånd
+    var ptr_1 = 327680
+    var ptr_2 = 327688
+    var ptr_3 = 327696
+    var ptr_space = 327704
     
-    ; --- KOLLA BOKSTAV 1 ('I' = 73) ---
-    data.peek ptr_one
+    ; 1. Verifiera att ordet börjar på 'I', 'N', 'C'
+    data.peek ptr_1
     sys.cmp 73
     sys.if_eq
-        ; CRITICAL FIX: Inga sys.pop här som förstör flaggregistret!
-        
-        ; --- KOLLA BOKSTAV 2 ('N' = 78) ---
-        data.peek ptr_two
+        data.peek ptr_2
         sys.cmp 78
         sys.if_eq
-            
-            ; --- KOLLA BOKSTAV 3 ('C' = 67) ---
-            data.peek ptr_three
+            data.peek ptr_3
             sys.cmp 67
             sys.if_eq
-                ; FULLSTÄNDIG MATCH: Texten i globala RAM var exakt "INC"! Sätt ID 1 i RBX!
-                sys.reg rbx = 1
+                
+                ; 2. DYNAMISK STRÖM-SPLITTNING: Kolla om det FJÄRDE tecknet är ett mellanslag (32)
+                data.peek ptr_space
+                sys.cmp 32
+                sys.if_eq
+                    ; MELLANSLAG HITTAT! Ordet "INC" är isolerat och avslutat korrekt!
+                    sys.reg rbx = 1
+                sys.else
+                    ; Det var inte ett mellanslag (Syntax-fel eller sammansatt ord)
+                    sys.reg rbx = 99
+                sys.if_done
+                
             sys.else
                 sys.reg rbx = 99
             sys.if_done
