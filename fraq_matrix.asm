@@ -6,26 +6,66 @@
 
 ; === FRAQSHIFT 64-BIT INSTRUCTION ENGINE: OP_LOAD_MATRIX (0xD0) ===
 
-cmp al, 0xD0                    ; Is the command FRAQSHIFT_OP_LOAD_MATRIX?
-jnz NEXT_FRAQ_OP                ; If not, skip to next (compiler calculates offset)
+run_compiler_pipeline:
+            BITS 64             ; Tell NASM to interpret the following pipeline as pure 64-bit Long Mode!
+            
+            mov rax, 327680
+            mov [rbp - 40], rax
+            mov rax, 327688
+            mov [rbp - 48], rax
+            mov rax, 327696
+            mov [rbp - 56], rax
+            mov rax, 327704
+            mov [rbp - 64], rax
+            mov rax, 328000
+            mov [rbp - 72], rax
+            mov rax, 329000
+            mov [rbp - 80], rax
+            
+            ; --- PIPELINE STEP 1: TOKENIZER ('I' = 73) ---
+            mov rbx, [rbp - 40]
+            movzx rax, byte [rbx]
+            cmp al, 73
+            jne .if_false_1
 
-; --- 2. FETCH 64-BIT ADDRESSES ---
-mov rsi, rbx                    ; RSI = Source address (from RBX)
-mov rdi, 0x0000001000000000     ; RDI = The exact 64 GB memory interface (64-bit imm)
+            ; --- PIPELINE STEP 2: 'N' = 78 ---
+            mov rbx, [rbp - 48]
+            movzx rax, byte [rbx]
+            cmp al, 78
+            jne .if_false_2
 
-; --- 3. SILICON DUMP (64-bit DMA-loop) ---
-; RCX contains the number of 4KB blocks. Shift left by 9 to get 8-byte (64-bit) dwords.
-; 4096 bytes per page / 8 bytes per dword = 512 (2^9), so shl rcx, 9 is correct.
-shl rcx, 9                      
+            ; --- PIPELINE STEP 3: 'C' = 67 ---
+            mov rbx, [rbp - 56]
+            movzx rax, byte [rbx]
+            cmp al, 67
+            jne .if_false_3
 
-rep movsq                       ; Stream the matrix data directly through the silicon!
+            ; --- PIPELINE STEP 4: SPACE = 32 ---
+            mov rbx, [rbp - 64]
+            movzx rax, byte [rbx]
+            cmp al, 32
+            jne .if_false_4
 
-; --- 4. INDICATE AI-GREEN 'M' ON SCREEN ---
-; Direct hardware register write for immediate visual confirmation
-mov rdx, 0xB80D8                ; Load absolute VGA address into register
-mov byte [rdx], 0x4D            ; Write ASCII 'M'
-mov byte [rdx+1], 0x0A          ; Write bright AI-green (attribute byte)
+            ; --- PIPELINE STEP 5: SYMBOL TABLE LOOKUP ('X' = 88) ---
+            mov rbx, [rbp - 72]
+            movzx rax, byte [rbx]
+            cmp al, 88
+            jne .if_false_5
 
-NEXT_FRAQ_OP:
-hlt                             ; Halt and wait for next silicon cycle
-jmp NEXT_FRAQ_OP
+            ; --- SUCCESS NODE: EMIT TEST CODE TO MEMORY ---
+            ; ÄNDRA HÄR: I stället för utropstecknet (33) laddar vi talet 63
+            ; vilket är ASCII för ett vackert frågtecken '?' som vårt slutgiltiga kiselbevis!
+            mov rax, 63
+            mov rbx, [rbp - 80]
+            mov [rbx], al
+            mov qword [rbp - 88], 1    ; Success flag
+            jmp .if_done_5
+
+.if_false_5:
+            mov qword [rbp - 88], 99
+.if_done_5:
+.if_false_4:
+.if_false_3:
+.if_false_2:
+.if_false_1:
+            ret
