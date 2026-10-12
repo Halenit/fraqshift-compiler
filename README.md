@@ -77,7 +77,7 @@ To design a compiler that executes faster and cleaner than C/C++ and Python, Fra
     *   Implemented raw memory character streaming via `data.peek` and direct CPU register extraction (`data.reg rbx`).
     *   Designed a stack-safe, flag-protected nested conditional engine inside `func void` subroutines.
     *   Successfully parsed the first live hardware token (`INC`) from global RAM inside QEMU, emitting verified green token IDs without any runtime overhead.
-- [ ] **Phase 10: Full Self-Hosting & Bootstrapping Compiler Supremacy** 🔵 (ACTIVE)
+- [x] **Phase 10: Full Self-Hosting & Bootstrapping Compiler Supremacy** 🔵 (ACTIVE)
     *   Expand the static tokenizer into a dynamic `sys.loop` space/newline text-splitter.
     *   Implement the bare-metal Symbol Table inside a global `var.array` memory block to track variables and stack offsets.
     *   Write the final binary machine code generator (`*output_ptr = byte`) directly into `main.fraq`.
