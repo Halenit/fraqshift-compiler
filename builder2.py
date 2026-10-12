@@ -351,7 +351,7 @@ for line_num, line in enumerate(lines, 1):
             exit()
 
 
-        # --- Phase 9: PEEK VALUE FROM RAW POINTER (data.peek source_ptr) ---
+        # --- Phase 10: PEEK SINGLE BYTE FROM RAW POINTER (data.peek) ---
     elif line.startswith("data.peek "):
         try:
             parts = [p for p in line.split() if p]
@@ -361,10 +361,11 @@ for line_num, line in enumerate(lines, 1):
                 exit()
             offset = symbol_table[ptr_name]
             
+            # Use MOVZX to fetch ONLY 1 byte and safely mask out garbage adjacent memory
             asm_payload = f"""
             mov rbx, [rbp - {offset}]   ; Load memory address
-            mov rax, [rbx]              ; Fetch raw 64-bit character
-            push rax                    ; Push onto calculation stack
+            movzx rax, byte [rbx]       ; Fetch EXACTLY one 8-bit byte and zero upper bits!
+            push rax                    ; Push clean value onto calculation stack
             """
             
             if in_function:
@@ -374,6 +375,7 @@ for line_num, line in enumerate(lines, 1):
         except IndexError:
             print(f"Syntax Error on line {line_num}: 'data.peek' requires a valid variable!")
             exit()
+
 
 
     elif line.startswith("data.array "):
