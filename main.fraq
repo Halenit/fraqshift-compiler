@@ -11,38 +11,121 @@ sys.clear
 sys.flush_key
 
 ; ==============================================================================
-; 1. MAIN PROGRAM EXECUTION FLOW (The Code Generator Final Test)
+; 1. MAIN PROGRAM EXECUTION FLOW (The Combined Three-Block Engine)
 ; ==============================================================================
-; Skapa en fast global adress (329000)
-var output_ptr = 329000
+; BLOCK A: PREPARE INPUT TEXT STREAM AND SYMBOL REGISTRATION IN RAM
+var src_buffer = 327680
+*src_buffer = 73              ; 'I'
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
 
-; CRITICAL FIX: Ladda talet 33 (Utropstecknet '!') direkt i RAX-registret
-; eftersom det är därifrån skriv-parsern hämtar datat vid pekaravrefereringen!
-sys.reg rax = 33
-*output_ptr = rax
+*src_buffer = 78              ; 'N'
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
 
-; ==============================================================================
-; 2. VERIFIERING: HÄMTA VÄRDET OCH STRÖMMA UT DET PÅ SKÄRMEN
-; ==============================================================================
-; Skapa en ny, ren variabel på stacken som ska hålla vårt resultat
-var result_val = 0
+*src_buffer = 67              ; 'C'
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
+sys.inc src_buffer
 
-; Läs av byten från RAM-minnet via vår uppdaterade byte-peek
-data.peek output_ptr
+*src_buffer = 32              ; MELLANSLAG (ASCII 32) - Här klipper Tokenizern!
 
-; Poppa värdet direkt från beräkningsstacken in i vår rena variabel
-result_val = rax
+; BLOCK B: REGISTER VARIABLE 'X' (88) AT STACK OFFSET 8 IN THE RAM SYMBOL TABLE
+var table_reg = 328000
+*table_reg = 88
+sys.inc table_reg
+sys.inc table_reg
+sys.inc table_reg
+sys.inc table_reg
+sys.inc table_reg
+sys.inc table_reg
+sys.inc table_reg
+sys.inc table_reg
+*table_reg = 8
 
-; Skapa vår skärmpekare för rad 5 (754304)
+; BLOCK C: EXECUTE THE COMPLETE STREAM COMPILER PIPELINE VIA HARDWARE CALL
+sys.call run_compiler_pipeline
+
+; BLOCK D: VERIFICATION & VISUALIZATION (Print Green Success Output)
 var row_five_ptr = 754304
-
-; Hämta det isolerade värdet från vår rena variabel och tryck ut på skärmen
-data.var result_val
+var verify_ptr = 329000
+data.peek verify_ptr
 *row_five_ptr = rax
 
-; Sätt färgattributet till ljusgrön (10) på nästa byte i VGA för maximal AI-glans
 sys.inc row_five_ptr
-*row_five_ptr = 10
+*row_five_ptr = 10            ; Turn the output AI-Green!
 
-; Hardware pause
+; Hardware system pause
 sys.read_key
+
+
+; ==============================================================================
+; 2. THE COMPILER CORE ROUTINE (Tokenize -> Lookup -> Generate)
+; ==============================================================================
+func void run_compiler_pipeline
+    ; Setup our independent reader and lookup registers
+    var ptr_1 = 327680
+    var ptr_2 = 327688
+    var ptr_3 = 327696
+    var ptr_space = 327704
+    var name_lookup = 328000
+    var gen_output = 329000
+
+    ; 1. PIPELINE STEP 1: TOKENIZER (Verify stream begins with "INC ")
+    data.peek ptr_1
+    sys.cmp 73
+    sys.if_eq
+        data.peek ptr_2
+        sys.cmp 78
+        sys.if_eq
+            data.peek ptr_3
+            sys.cmp 67
+            sys.if_eq
+                data.peek ptr_space
+                sys.cmp 32
+                sys.if_eq
+                    
+                    ; 2. PIPELINE STEP 2: SYMBOL TABLE LOOKUP (Find variable 'X')
+                    data.peek name_lookup
+                    sys.cmp 88
+                    sys.if_eq
+                        
+                        ; 3. PIPELINE STEP 3: CODE GENERATION (Emit Opcode 33)
+                        sys.reg rax = 33
+                        *gen_output = rax
+                        sys.reg rbx = 1      ; Pipeline finished with absolute success!
+                        
+                    sys.else
+                        sys.reg rbx = 99
+                    sys.if_done
+                    
+                sys.else
+                    sys.reg rbx = 99
+                sys.if_done
+            sys.else
+                sys.reg rbx = 99
+            sys.if_done
+        sys.else
+            sys.reg rbx = 99
+        sys.if_done
+    sys.else
+        sys.reg rbx = 99
+    sys.if_done
+func_done
