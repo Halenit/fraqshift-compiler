@@ -124,55 +124,79 @@ kernel_main:
     ; ==========================================================================
     ; PHASE 11 (STEG C): THE COMPLETE INTERACTIVE GRAPHICAL TERMINAL
     ; ==========================================================================
-    mov rdi, 0x200000
-    add rdi, 410000             ; Startposition på skärmen (X=100, Y=100)
+        mov rdi, 0x200000
+    add rdi, 410000             ; Startposition (X=100, Y=100)
 
 .terminal_input_loop:
-    in al, 0x64                 ; Läs statusporten för PS/2-kontrollern
-    test al, 0x01               ; Har en tangent tryckts ned?
+    in al, 0x64                 ; Läs statusporten för PS/2
+    test al, 0x01
     jz .terminal_input_loop
     
-    in al, 0x60                 ; HÄMTA HÅRDVARU-SCANKODEN
+    in al, 0x60                 ; Hämta rå scankod [INDEX]
 
-    ; --- 1. KOLLA ENTER (Scankod 0x1C) ---
-    cmp al, 0x1C
+    ; --- KOLLA SPECIAL-TANGENTER ---
+    cmp al, 0x1C                ; Enter
     je .handle_enter
-
-    ; --- 2. KOLLA BACKSPACE (Scankod 0x0E) ---
-    cmp al, 0x0E
+    cmp al, 0x0E                ; Backspace
     je .handle_backspace
-
-    ; --- 3. KOLLA MELLANSLAG (Scankod 0x39) ---
-    cmp al, 0x39
+    cmp al, 0x39                ; Space
     je .handle_space
 
-    ; --- 4. KOLLA BOKSTAVEN 'A' (Scankod 0x1E) ---
-    cmp al, 0x1E
-    jne .terminal_input_loop    ; Om det inte var något av detta, vänta på nästa tangent
+    ; --- TABELL-INDEXERING: Hitta rätt bokstavsadress ---
+    ; Vi mappar scankoderna direkt till våra etiketter i font_rom
+    mov rsi, font_rom           ; RSI pekar på början av vår font-rom
+    
+    cmp al, 0x17                ; Tryckte användaren på 'I'?
+    je .load_I
+    cmp al, 0x31                ; Tryckte användaren på 'N'?
+    je .load_N
+    cmp al, 0x2E                ; Tryckte användaren på 'C'?
+    je .load_C
+    cmp al, 0x1E                ; Tryckte användaren på 'A'?
+    je .load_A
+    
+    jmp .terminal_input_loop    ; Okänd tangent? Strunt i den och vänta.
 
-    ; --- RITA BOKSTAVEN 'A' ---
-    push rdi
-    mov r8, 0x66667E66663C1800  ; Little Endian bitmapp för 'A'
-    mov ecx, 8
+.load_I:
+    add rsi, 0
+    jmp .start_draw
+.load_N:
+    add rsi, 16
+    jmp .start_draw
+.load_C:
+    add rsi, 32
+    jmp .start_draw
+.load_A:
+    add rsi, 48
+    jmp .start_draw
+
+
+.start_draw:
+    push rdi                    ; Spara nuvarande markörposition
+    mov ecx, 16                 ; Alla våra bokstäver är nu exakt 16 rader höga!
+
 .interactive_row_loop:
     push rcx
-    mov bl, r8b
-    mov ecx, 8
+    mov bl, [rsi]               ; HÄMTA EN RÅ BYTE DIREKT FRÅN FONT-ROM I RAM!
+    mov ecx, 8                  ; 8 pixlar per rad
+
 .interactive_pixel_loop:
     shl bl, 1
     jnc .interactive_skip_pixel
-    mov dword [rdi], 0x00FFFF00 ; Ljusblå pixel
+    mov dword [rdi], 0x00FFFF00 ; Rita cyan-färgade pixlar [INDEX]
 .interactive_skip_pixel:
     add rdi, 4
     loop .interactive_pixel_loop
-    add rdi, (1024 * 4) - 32
-    shr r8, 8                  ; Vi rensar bort detta om NASM klagar, men det är fixat nu!
+    
+    add rdi, (1024 * 4) - 32    ; Hoppa ner till nästa skärmrad
+    inc rsi                     ; Stega framåt till nästa byte i vår font-rom!
     pop rcx
     loop .interactive_row_loop
-    pop rdi
     
-    add rdi, 48                 ; Flytta markören 12 pixlar till höger (12 * 4 = 48 bytes)
+    pop rdi
+    add rdi, 48                 ; Flytta markören till nästa teckenruta
     jmp .clear_buffer_wait
+
 
 ; --- HARDWARE HANDLERS FÖR SPECIAL-TANGENTER ---
 
@@ -413,6 +437,31 @@ run_compiler_pipeline:
             .if_done_1:
 
             ret
+
+
+align 16
+font_rom:
+    ; Varje block är exakt 16 bytes. 1 = tänd pixel, 0 = släckt.
+    
+    ; --- BOKSTAVEN 'I' (ASCII 73) ---
+    .char_I:
+        db 0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18
+        db 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E
+
+    ; --- BOKSTAVEN 'N' (ASCII 78) ---
+    .char_N:
+        db 0x66, 0x66, 0x66, 0x6E, 0x6E, 0x76, 0x76, 0x7A
+        db 0x7A, 0x6E, 0x6E, 0x66, 0x66, 0x66, 0x66, 0x66
+
+    ; --- BOKSTAVEN 'C' (ASCII 67) ---
+    .char_C:
+        db 0x3C, 0x66, 0x66, 0x40, 0x40, 0x40, 0x40, 0x40
+        db 0x40, 0x40, 0x40, 0x40, 0x66, 0x66, 0x3C, 0x00
+
+    ; --- BOKSTAVEN 'A' (ASCII 65) - Vår gamla trotjänare ---
+    .char_A:
+        db 0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66
+        db 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x00
 
 section .pad
 times 32768-($-$$) db 0
