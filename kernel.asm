@@ -104,7 +104,7 @@ times 510-($-$$) db 0       ; Pad Stage 1 to exactly 510 bytes
 dw 0xAA55                   ; MBR Boot Signature for Sector 1
 
 ; ==============================================================================
-; STAGE 2 KERNEL: Executed in pure 64-bit Long Mode (Frigjord från 512 bytes!)
+; STAGE 2 KERNEL: Executed in pure 64-bit Long Mode (Freed from the 512-byte limit!)
 ; ==============================================================================
 BITS 64
 
@@ -149,9 +149,10 @@ kernel_main:
 .flush_done:
 
     ; --- STEP 2: INITIALIZE GRAPHICS TERMINAL CURSOR POSITION ---
-    mov rdi, 0x50000            ; Switch back to a completely safe memory footprint if needed, or leave at 0xFD000000
-    mov rdi, 0xFD000000         ; Keep the verified working QEMU LFB base
-    add rdi, 410000             ; Starting position offset (X=100, Y=100)
+    mov rdi, 0xFD000000         ; Start at the verified working QEMU LFB base address
+    add rdi, 413696             ; Move down exactly 101 full rows vertically (101 * 4096)
+    add rdi, 80                ; Apply clean left margin padding (X=100 pixels * 4 bytes)
+
 
     ; --- STEP 3: HARDWARE VERIFICATION (Enable PS/2 Keyboard Port) ---
 .verify_keyboard_interface:
@@ -168,23 +169,27 @@ kernel_main:
     jz .terminal_input_loop     ; Loop and wait safely
 
     in al, 0x60                 ; Fetch raw hardware scancode from keyboard
+    
+
 
     ; --- PHASE 12: STATEFUL KEYBOARD TRACKING (SHIFT & CAPS HANDLING) ---
     cmp al, 0x2A                ; Left Shift Pressed
     je .shift_pressed_state
     cmp al, 0x36                ; Right Shift Pressed
     je .shift_pressed_state
-    cmp al, 0xAA                ; Left Shift Released
+    cmp al, 0xAA                ; Left Shift Released (handle before filtering key releases)
     je .shift_released_state
-    cmp al, 0xB6                ; Right Shift Released
+    cmp al, 0xB6                ; Right Shift Released (handle before filtering key releases)
     je .shift_released_state
     cmp al, 0x3A                ; Caps Lock Pressed
     je .caps_pressed_state
 
-    ; Skip normal key releases (Break Codes have bit 7 set, >= 0x80)
+    ; Now we can safely skip normal key releases without blocking Shift!
     test al, 0x80
     jnz .terminal_input_loop
+    
     jmp .process_ascii_lookup
+
 
 .shift_pressed_state:
     mov byte [0x500], 1         ; Set Shift flag to ACTIVE (1) in safe RAM (0x500)
@@ -212,7 +217,7 @@ kernel_main:
     jmp .caps_lock_check_local  ; Jump straight past translation to draw the backslash!
 
 .force_true_pipe:
-    mov al, 126                 ; Force ASCII 124, which is the true '|' (Pipe!)
+    mov al, 124                 ; ASCII 124 is the pipe character (|)
     jmp .caps_lock_check_local  ; Jump straight past translation to draw the pipe!
 
 
@@ -245,6 +250,7 @@ kernel_main:
 .skip_quote_override:
 
     
+
 
     ; --- TARGETED HARDWARE OVERRIDE: BUTTON RIGHT OF COMMA ---
     ; Physical button right of comma sends hardware scancode 0x34
@@ -318,10 +324,11 @@ kernel_main:
 
     ; --- HIGH-SPEED DIRECT INDEX TRANSLATION ---
     lea rbx, [rel scan_to_ascii] 
-
+    
 
 .read_normal_char_local:
-    movzx rax, al               ; Read raw key index cleanly from AL
+    movzx rax, al               ; Zero-extend the hardware scancode
+    mov r12d, eax               ; Preserve the original scancode for symbol mapping
     mov al, [rbx + rax] 
     cmp al, 0
     je .terminal_input_loop     ; FIXED: Now points to your true local start loop!
@@ -333,9 +340,9 @@ kernel_main:
     ; =========================================================================
 
     ; 1. BUTTON LEFT OF Z: Force '\' (Normal) or '|' (Shift)
-    cmp rax, 0x56
+    cmp r12d, 0x56
     je .apply_backslash_logic
-    cmp rax, 0x1B               ; Catch emulated layout swap for this specific key
+    cmp r12d, 0x1B               ; Catch emulated layout swap for this specific key
     jne .check_comma_key
 
 .apply_backslash_logic:
@@ -344,12 +351,12 @@ kernel_main:
     mov al, 92                  ; Force standard ASCII '\' (Backslash)
     jmp .caps_lock_check_local
 .force_pure_pipe:
-    mov al, 126                 ; Force ASCII 126 (True Hardware Pipeline '|')
+    mov al, 124                 ; ASCII 124 is the pipe character (|)
     jmp .caps_lock_check_local
 
 .check_comma_key:
     ; 2. BUTTON RIGHT OF M: Force '<' when Shift is active
-    cmp rax, 0x33
+    cmp r12d, 0x33
     jne .check_dot_key
     cmp byte [0x500], 1         ; Is Shift held down?
     jne .caps_lock_check_local  ; If NOT down, bypass and keep working normal ','
@@ -358,7 +365,7 @@ kernel_main:
 
 .check_dot_key:
     ; 3. BUTTON RIGHT OF COMMA: Force '>' when Shift is active
-    cmp rax, 0x34
+    cmp r12d, 0x34
     jne .check_slash_key
     cmp byte [0x500], 1         ; Is Shift held down?
     jne .caps_lock_check_local  ; If NOT down, bypass and keep working normal '.'
@@ -367,7 +374,7 @@ kernel_main:
 
 .check_slash_key:
     ; 4. BUTTON RIGHT OF DOT: Force '?' when Shift is active
-    cmp rax, 0x35
+    cmp r12d, 0x35
     jne .check_colon_key
     cmp byte [0x500], 1         ; Is Shift held down?
     jne .caps_lock_check_local  ; If NOT down, bypass and keep working normal '/'
@@ -376,7 +383,7 @@ kernel_main:
 
 .check_colon_key:
     ; 5. BUTTON RIGHT OF L: Force ':' when Shift is active
-    cmp rax, 0x27
+    cmp r12d, 0x27
     jne .check_quote_key
     cmp byte [0x500], 1         ; Is Shift held down?
     jne .caps_lock_check_local  ; If NOT down, bypass and keep working normal ';'
@@ -386,44 +393,152 @@ kernel_main:
 
 .check_quote_key:
     ; 6. BUTTON RIGHT OF COLON: Force '"' when Shift is active
-    cmp rax, 0x28
+    cmp r12d, 0x28
     jne .caps_lock_check_local
     cmp byte [0x500], 1         ; Is Shift held down?
     jne .caps_lock_check_local  ; If NOT down, bypass and keep working normal '\''
     mov al, 34                  ; Force standard ASCII '"'
     jmp .caps_lock_check_local
 
-
+    ; =========================================================================
+; TODO: RETURN HERE LATER TO FINALIZE ADJUSTMENTS FOR ~ ^ _ { } Symbols and brackets [ ]
+; Note: Current mapping is stable for typing letters, numbers, and Symbols !@#$%&*()+.
+; =========================================================================
 
 .caps_lock_check_local:
-    ; --- CAPS LOCK & SHIFT ALPHABET CONVERSION ENGINE ---
-    cmp byte [0x501], 1         ; Is Caps Lock active?
-    je .force_uppercase         ; If active, force uppercase!
-    cmp byte [0x500], 1         ; Is Shift active instead?
-    jne .font_alignment_check_local
+    ; Apply the US keyboard layout using the original hardware scancode.
+    ; Shift changes punctuation; Caps Lock affects letters only.
+    cmp byte [0x500], 1         ; Is either Shift key held?
+    jne .check_caps_only
 
-.force_uppercase:
+    ; Shifted number row: ! @ # $ % ^ & * ( ) _ +
+    cmp r12d, 0x02
+    je .sym_exclamation
+    cmp r12d, 0x03
+    je .sym_at
+    cmp r12d, 0x04
+    je .sym_hash
+    cmp r12d, 0x05
+    je .sym_dollar
+    cmp r12d, 0x06
+    je .sym_percent
+    cmp r12d, 0x07
+    je .sym_caret
+    cmp r12d, 0x08
+    je .sym_ampersand
+    cmp r12d, 0x09
+    je .sym_asterisk
+    cmp r12d, 0x0A
+    je .sym_left_paren
+    cmp r12d, 0x0B
+    je .sym_right_paren
+    cmp r12d, 0x0C
+    je .sym_underscore
+    cmp r12d, 0x0D
+    je .sym_plus
+
+    ; Shifted punctuation around P and the home row
+    cmp r12d, 0x29
+    je .sym_tilde
+    cmp r12d, 0x1A
+    je .sym_left_brace
+    cmp r12d, 0x1B
+    je .sym_right_brace
+    cmp r12d, 0x27
+    je .sym_colon
+    cmp r12d, 0x28
+    je .sym_double_quote
+    cmp r12d, 0x2B
+    je .sym_pipe
+    cmp r12d, 0x33
+    je .sym_less_than
+    cmp r12d, 0x34
+    je .sym_greater_than
+    cmp r12d, 0x35
+    je .sym_question
+
+    ; Shift uppercases letters, but leaves other characters unchanged.
     cmp al, 'a'
-    jl .font_alignment_check_local
+    jb .font_alignment_check_local
     cmp al, 'z'
-    jg .font_alignment_check_local
-    sub al, 32                  ; Convert cleanly to uppercase if Caps or Shift is active
-    
-    ; --- TARGETED HARDWARE OVERRIDE: FORCE '{' AND '}' VIA RAW SCANCODES ---
-    cmp byte [0x500], 1         ; Is Shift currently active (1)?
-    jne .font_alignment_check_local ; If NOT down, bypass and keep normal layer working
-    
-    cmp rax, 0x1A               ; Is it the raw scancode for the button right of P?
-    jne .check_hardware_closing
-    mov al, '{'                 ; Force true open curly brace directly!
+    ja .font_alignment_check_local
+    sub al, 32
     jmp .font_alignment_check_local
 
-.check_hardware_closing:
-    cmp rax, 0x1B               ; Is it the raw scancode for the next button to the right?
+.check_caps_only:
+    ; Caps Lock uppercases letters without changing punctuation.
+    cmp byte [0x501], 1
     jne .font_alignment_check_local
-    mov al, '}'                 ; Force true closing curly brace directly!
+    cmp al, 'a'
+    jb .font_alignment_check_local
+    cmp al, 'z'
+    ja .font_alignment_check_local
+    sub al, 32
+    jmp .font_alignment_check_local
 
-    
+.sym_exclamation:
+    mov al, '!'
+    jmp .font_alignment_check_local
+.sym_at:
+    mov al, '@'
+    jmp .font_alignment_check_local
+.sym_hash:
+    mov al, '#'
+    jmp .font_alignment_check_local
+.sym_dollar:
+    mov al, '$'
+    jmp .font_alignment_check_local
+.sym_percent:
+    mov al, '%'
+    jmp .font_alignment_check_local
+.sym_caret:
+    mov al, '^'
+    jmp .font_alignment_check_local
+.sym_ampersand:
+    mov al, '&'
+    jmp .font_alignment_check_local
+.sym_asterisk:
+    mov al, '*'
+    jmp .font_alignment_check_local
+.sym_left_paren:
+    mov al, '('
+    jmp .font_alignment_check_local
+.sym_right_paren:
+    mov al, ')'
+    jmp .font_alignment_check_local
+.sym_underscore:
+    mov al, '_'
+    jmp .font_alignment_check_local
+.sym_plus:
+    mov al, '+'
+    jmp .font_alignment_check_local
+.sym_tilde:
+    mov al, '~'
+    jmp .font_alignment_check_local
+.sym_left_brace:
+    mov al, '{'
+    jmp .font_alignment_check_local
+.sym_right_brace:
+    mov al, '}'
+    jmp .font_alignment_check_local
+.sym_colon:
+    mov al, ':'
+    jmp .font_alignment_check_local
+.sym_double_quote:
+    mov al, '"'
+    jmp .font_alignment_check_local
+.sym_pipe:
+    mov al, '|'
+    jmp .font_alignment_check_local
+.sym_less_than:
+    mov al, '<'
+    jmp .font_alignment_check_local
+.sym_greater_than:
+    mov al, '>'
+    jmp .font_alignment_check_local
+.sym_question:
+    mov al, '?'
+    jmp .font_alignment_check_local
 .font_alignment_check_local:
     ; --- LINEAR FONT LOOKUP VIA UNIVERSAL ASCII INDEX ---
     cmp al, 97
@@ -442,18 +557,56 @@ kernel_main:
     mov rsi, font_rom           ; Load absolute 64-bit base address of Font ROM into RSI
     add rsi, rbx                ; RSI now points exactly to target character matrix
 
+    ; --- AUTOMATIC LINE BREAK INTERCEPTOR WITH BOTTOM CLEAR ---
+    push rax
+    push rcx
+    push rdx
+    push r14
+
+    mov r14, 0xFD000000         ; QEMU LFB Base Address
+    mov rax, rdi
+    sub rax, r14                ; Get raw byte offset from start of screen
+    
+    ; Check if we have bled past the absolute bottom of the screen (Pixel 700 vertically)
+    ; 700 rows * 4096 bytes per row = 2,867,200 bytes
+    cmp rax, 2867200
+    jb .check_right_margin      ; No -> Safe from bottom, go check right margin
+    
+    ; YES -> We reached the bottom! Clear screen or wrap around to top!
+    mov rdi, 0xFD000000         ; Reset cursor to absolute top of screen
+    add rdi, 410000             ; Snap back to starting position offset (X=100, Y=100)
+    jmp .safe_no_line_break     ; Done! Bypass line break and draw safely
+
+.check_right_margin:
+    xor rdx, rdx
+    mov rcx, 4096               ; Stride width of one full row
+    div rcx                     ; rdx now holds current X coordinate in bytes
+    
+    cmp rdx, (500 * 4)          ; Passed pixel 900 horizontally?
+    jb .safe_no_line_break
+    
+    ; Force newline
+    add rdi, 65536              ; Move down 16 pixels
+    sub rdi, rdx                ; Snap to left margin
+    add rdi, 80                 ; X=100 padding
+
+.safe_no_line_break:
+    pop r14
+    pop rdx
+    pop rcx
+    pop rax
+
+
+
+
+
 .start_draw:
-
-
-
-
-
-    mov r10, rdi                ; Save the absolute original character base position in R10
-    mov r11, rdi                ; R11 will act as our running row-start tracker
-    mov r8d, 16                 ; R8D = Outer loop counter (16 pixel rows high)
+    mov r8, rdi                 ; FIXED: Copy core cursor to R8! R8 will do all the dirty row jumping.
+    mov rcx, 16                 ; RCX = Outer loop counter (16 pixel rows high)
 
 .interactive_row_loop:
     mov bl, [rsi]               ; Fetch 8-bit row pixel bitmap from Font ROM
+    push r8                     ; Save the start of this specific pixel row on stack
     mov r9d, 8                  ; R9D = Inner loop counter (8 horizontal pixels per row)
 
 .interactive_pixel_loop:
@@ -461,28 +614,26 @@ kernel_main:
     jnc .interactive_skip_pixel ; If bit is 0, leave background transparent
     
     ; Bit is 1! Render an intense light-blue pixel (Opaque Alpha + Cyan color)
-    mov dword [rdi], 0xFF00FFFF 
+    mov dword [r8], 0xFF00FFFF 
 
 .interactive_skip_pixel:
-    add rdi, 4                  ; Move cursor 4 bytes right to next horizontal pixel
+    add r8, 4                   ; Move drawing pen 4 bytes right to next pixel
     dec r9d                     ; Decrement inner pixel counter
     jnz .interactive_pixel_loop ; Keep drawing horizontal pixels until R9D reaches 0
 
     ; --- CRITICAL PIXEL ROW REALIGNMENT ---
-    ; Advance our tracking pointer down exactly 1 row, then snap cursor to its start
-    mov rax, 4096               ; Safe 64-bit row stride width (1024 width * 4 bytes)
-    add r11, rax                ; Move row-start tracker down by 4096 bytes
-    mov rdi, r11                ; Snap cursor straight to the start of this next row
+    pop r8                      ; Restore the start of the row we just drew
+    add r8, 4096                ; Move drawing pen exactly 1 row down vertically (1024 * 4)
     
     inc rsi                     ; Move to the next font row byte in Font ROM
-    dec r8d                     ; Decrement outer row counter
-    jnz .interactive_row_loop   ; Keep looping vertically until all 16 rows are drawn
+    loop .interactive_row_loop  ; Use optimized x86 LOOP instruction tied to RCX!
     
-    ; --- ADVANCE TO NEXT CHARACTER BOX ---
-    mov rdi, r10                ; Restore the absolute original character base position
-    mov rax, 48                 ; Advance cursor 12 pixels right to next char slot (12 * 4)
-    add rdi, rax                ; Safely increment RDI with full 64-bit width
+    ; --- ADVANCE THE GENUINE CURSOR TO NEXT CHARACTER BOX ---
+    ; FIXED: Since RDI was never altered by the rows, it is 100% clean and perfectly aligned!
+    add rdi, 48                 ; Advance cursor 12 pixels right to next char slot (12 * 4)
     jmp .terminal_input_loop    ; Return safely to keyboard listener loop
+
+
 
 ; ==============================================================================
 ; --- HARDWARE HANDLERS FOR SPECIAL TERMINAL KEYS ---
@@ -504,7 +655,7 @@ kernel_main:
     sub rdi, rdx                ; Subtract X offset to snap back to absolute left margin
     add rdi, rbx                ; Add the true hardware base address back
     
-    add rdi, 400                ; Apply clean left margin padding (X=100)
+    add rdi, 80                 ; Apply clean left margin padding (X=100)
     jmp .terminal_input_loop    ; Jump back to wait for next key
 
 
@@ -736,11 +887,11 @@ align 16
 scan_to_ascii:
     ; --- LAYER 1: DEFAULT INTENSE CHARACTERS (Offset +0 bytes) ---
     ; Row 1: Scancodes 0x00 - 0x0F (` 1 2 3 4 5 6 7 8 9 0 - =)
-    db 0,  '`', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0,  0
+    db 0,  96, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0,  0
     ; Row 2: Scancodes 0x10 - 0x1F (q w e r t y u i o p [ ] Enter)
     db 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']',  0,  0, 'a', 's'
     ; Row 3: Scancodes 0x20 - 0x2F (d f g h j k l ; ' ` \ )
-    db 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', 39,  '`',  0, 92, 'z', 'x', 'c', 'v'
+    db 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', 39,  96,  0, 92, 'z', 'x', 'c', 'v'
     ; Row 4: Scancodes 0x30 - 0x3F (b n m , . / )
     db 'b', 'n', 'm', ',', '.', '/',  0,  0,  0, ' ',  0,  0,  0,  0,  0,  0
 
@@ -749,11 +900,12 @@ scan_to_ascii:
     ; Row 1 (Shifted): Scancodes 0x00 - 0x0F (~ ! @ # \$ % ^ & * ( ) _ +)
     db 0,  '~', '!', '@', '#', '\$', '%', '^', '&', '*', '(', ')', '_', '+',  0,  0
     ; Row 2 (Shifted): Scancodes 0x10 - 0x1F (Q W E R T Y U I O P { })
-        db 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}',  0,  0,  0,  0 ; Row 2 Shifted
+    db 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}',  0,  0,  0,  0 ; Row 2 Shifted
     ; Row 3 (Shifted): Scancodes 0x20 - 0x2F (D F G H J K L : " ~ |)
     db 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"',  '~',  0, 124, 'Z', 'X', 'C', 'V'
     ; Row 4 (Shifted): Scancodes 0x30 - 0x3F (B N M < > ?)
     db 'B', 'N', 'M', '<', '>', '?',  0,  0,  0, ' ',  0,  0,  0,  0,  0,  0
+
 
 
 
