@@ -12,7 +12,16 @@ echo       FRAQSHIFT OS AUTOMATED BUILD SYSTEM V6.0
 echo =========================================================
 
 echo.
-echo [1/2] Assembling kernel.asm via local NASM...
+echo [1/3] Checking for virtual hardware disk array...
+if not exist fraq_hdd.img (
+    echo [INFO] Creating new blank 10MB master hard drive...
+    "C:\Program Files\qemu\qemu-img.exe" create -f raw fraq_hdd.img 10M
+) else (
+    echo [INFO] Virtual hard drive detected and ready.
+)
+
+echo.
+echo [2/3] Assembling kernel.asm via local NASM...
 nasm.exe -f bin kernel.asm -o fraqshift_kernel.bin
 if %errorlevel% neq 0 (
     echo.
@@ -21,9 +30,10 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [2/2] Launching Fraqshift OS inside QEMU Bare-Metal Sandbox...
+echo [3/3] Launching Fraqshift OS inside QEMU Bare-Metal Sandbox...
 echo ---------------------------------------------------------
-"C:\Program Files\qemu\qemu-system-x86_64.exe" -drive format=raw,file=fraqshift_kernel.bin
+"C:\Program Files\qemu\qemu-system-x86_64.exe" -boot order=a -drive format=raw,file=fraqshift_kernel.bin,if=floppy -drive format=raw,file=fraq_hdd.img,if=ide
+
 
 :menu
 echo.

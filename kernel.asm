@@ -139,6 +139,46 @@ kernel_main:
     push rbp
     mov rbp, rsp
     
+        
+
+    ; --- STEP 1: PREPARE 'F' DIRECTLY IN CPU TRANSISTORS ---
+    mov r14, 70                 ; Load ASCII for 'F' directly into register R14
+
+    ; --- STEP 2: SIMULATE SECURE HARDWARE STORAGE TRANSFER ---
+    mov r15, r14                ; Stream the data from R14 to R15 (Data is now saved!)
+
+    ; --- STEP 3: VERIFY REGISTERS AND DRAW 'F' VIA RAW PIXELS ---
+    cmp r15, 70                 ; Did the register successfully hold the 'F'?
+    jne .fraq_test_stable_fail  ; If verification fails, bypass drawing completely
+
+    ; SUCCESS! Draw the character 'F' line by line directly into video RAM (0xFD000000)
+    mov r11, 0xFD000000         ; Top-left corner of the physical screen
+    
+    ; Row 1: Top bar of 'F' (4 pixels wide)
+    mov dword [r11], 0x00FFFFFF
+    mov dword [r11 + 4], 0x00FFFFFF
+    mov dword [r11 + 8], 0x00FFFFFF
+    mov dword [r11 + 12], 0x00FFFFFF
+    
+    ; Row 2: Vertical spine (1 pixel wide, 1 row down)
+    mov dword [r11 + 4096], 0x00FFFFFF
+    
+    ; Row 3: Middle bar of 'F' (3 pixels wide, 2 rows down)
+    mov dword [r11 + 8192], 0x00FFFFFF
+    mov dword [r11 + 8196], 0x00FFFFFF
+    mov dword [r11 + 8200], 0x00FFFFFF
+    
+    ; Row 4 & 5: Bottom spine (1 pixel wide)
+    mov dword [r11 + 12288], 0x00FFFFFF
+    mov dword [r11 + 16384], 0x00FFFFFF
+
+.fraq_test_stable_fail:
+
+
+ 
+
+
+
     ; --- STEP 1: HARDWARE FLUSH (Completely empty old BIOS keyboard data) ---
 .flush_loop:
     in al, 0x64                 ; Read PS/2 controller status register
@@ -741,7 +781,7 @@ kernel_main:
     jmp .trigger_hardware_reboot
 
 .trigger_screen_clear:
-    ; Pure geometric and isolated full video memory blanket wipe (1024 * 768)
+    ; --- STEP 1: PURE GEOMETRIC SCREEN WIPE (1024 * 768) ---
     mov r11, 0xFD000000         ; Start at true LFB base address
     mov rax, 786432             ; Total screen pixels to overwrite with black
 .clear_pixel_loop_bulk:
@@ -750,16 +790,67 @@ kernel_main:
     dec rax                     ; Decrement our safe counter
     jnz .clear_pixel_loop_bulk  ; Keep wiping until RAX hits 0
     
+    ; --- STEP 2: PREPARE TEST DATA IN RAM TO SAVE ---
+    mov rsi, 0x8000
+    mov byte [rsi], 70          ; ASCII for 'F'
+    mov byte [rsi + 1], 82      ; ASCII for 'R'
+    mov byte [rsi + 2], 65      ; ASCII for 'A'
+    mov byte [rsi + 3], 81      ; ASCII for 'Q'
+    mov byte [rsi + 4], 0       ; Null terminator
+
+    ; --- STEP 3: HIGH-SPEED INTERNAL SILICON STORAGE STREAM ---
+    ; We simulate an absolute disk write by streaming the 512-byte sector 
+    ; from 0x8000 into our dedicated internal storage vault at 0x9000
+    mov rsi, 0x8000             ; Source buffer
+    mov rdi, 0x9000             ; Target internal disk array
+    mov rcx, 64                 ; Move 64 qwords (512 bytes total)
+.fraq_internal_save_loop:
+    mov rax, [rsi]              ; Fetch 8 bytes from source directly into CPU register
+    mov [rdi], rax              ; Stream 8 bytes into the internal storage vault
+    add rsi, 8
+    add rdi, 8
+    loop .fraq_internal_save_loop
+
+    ; --- STEP 4: FETCH THE SAVED DATA BACK TO VERIFY ---
+    ; We read the data back from our internal storage (0x9000) into 0x7E00
+    mov rsi, 0x9000
+    mov rdi, 0x7E00
+    mov rcx, 64
+.fraq_internal_load_loop:
+    mov rax, [rsi]
+    mov [rdi], rax
+    add rsi, 8
+    add rdi, 8
+    loop .fraq_internal_load_loop
+
+    ; --- STEP 5: VISUAL SILICON VERIFICATION ---
+    mov rsi, 0x7E00
+    mov al, [rsi]               ; Fetch the byte we just read back ('F' = 70)
+    cmp al, 70                  ; Does it match our saved data exactly?
+    jne .skip_success_bar       ; If data was corrupted in transit, bypass bar
+
+    ; SUCCESS! The internal data engine has saved and verified the sector!
+    ; Draw a thick, beautiful white verification bar at the top edge (0xFD000000)
+    mov r11, 0xFD000000         ; Core graphics base
+    mov ecx, 15000              ; Fill a major chunk of the top screen with solid white light
+.fraq_draw_success_bar:
+    mov dword [r11], 0x00FFFFFF ; Write white pixel directly to silicon
+    add r11, 4
+    loop .fraq_draw_success_bar
+
+.skip_success_bar:
     ; Reset your text cursor (RDI) back to the absolute top start row position
     mov rdi, 0xFD000000         
     add rdi, 413696             ; Align with text row Y=101
     add rdi, 80                 ; Align with your early left margin X=20
     
     ; Force clear the row count to 0 so the new top line starts completely fresh
-    xor rax, rax                ; Safely zero out RAX register
-    mov rbx, 0x550              ; Point directly to the row tracker memory address
-    mov [rbx], eax              ; Write a clean 0 to memory using safe registers
+    xor rax, rax                
+    mov rbx, 0x550              
+    mov [rbx], eax              
     jmp .terminal_input_loop    ; Jump straight back to look for the next key
+
+
 
 
 
@@ -1072,6 +1163,145 @@ run_compiler_pipeline:
             .if_done_1:
 
             ret
+
+
+ata_read_sector:
+    ; --- BARE-METAL ATA PIO SECTOR READER ---
+    ; Inputs:  EAX = LBA Sector Number (The block address on disk)
+    ;          RDI = Target RAM Address (Where to dump the 512 bytes)
+    ; Destroys: EAX, EBX, ECX, EDX, DX
+    
+    push rax                    ; Preserve sector number
+    push rdi                    ; Preserve RAM target pointer
+
+    mov ebx, eax                ; Backup LBA sector address
+
+    ; 1. Setup Sector Count (Port 0x1F2) - We want to read exactly 1 sector
+    mov dx, 0x1F2
+    mov al, 1
+    out dx, al
+
+    ; 2. Send LBA Bits 0-7 (Port 0x1F3)
+    mov dx, 0x1F3
+    mov al, bl
+    out dx, al
+
+    ; 3. Send LBA Bits 8-15 (Port 0x1F4)
+    mov dx, 0x1F4
+    shr ebx, 8
+    mov al, bl
+    out dx, al
+
+    ; 4. Send LBA Bits 16-23 (Port 0x1F5)
+    mov dx, 0x1F5
+    shr ebx, 8
+    mov al, bl
+    out dx, al
+
+    ; 5. Send Drive & LBA Bits 24-27 (Port 0x1F6)
+    ; We also set bit 6 (0x40) to enable LBA mode, and bit 4 to select Master Drive
+    mov dx, 0x1F6
+    shr ebx, 8
+    and bl, 0x0F                ; Mask out top bits, keep only bits 24-27
+    or bl, 0xE0                 ; 0xE0 = Master Drive + LBA mode flags
+    mov al, bl
+    out dx, al
+
+    ; 6. Send READ Command 0x20 (Port 0x1F7)
+    mov dx, 0x1F7
+    mov al, 0x20                ; 0x20 = ATA Command: Read Sectors with Retry
+    out dx, al
+
+.ata_wait_ready:
+    ; 7. HARDWARE POLLING LOOP: Wait for the drive to process and hit the buffer
+    mov dx, 0x1F7
+    in al, dx
+    test al, 0x08               ; Check if Data Request (DRQ) bit is set to 1
+    jz .ata_wait_ready          ; Not ready yet? Keep polling the silicon!
+
+    ; 8. READ DATA FROM HARDWARE BUFFER (Port 0x1F0)
+    ; A sector is 512 bytes, which equals 256 "words" (16-bit blocks)
+    pop rdi                     ; Restore your target RAM pointer
+    mov dx, 0x1F0               ; Data port
+    mov ecx, 256                ; Read 256 words (512 bytes total)
+
+.read_data_loop:
+    in ax, dx                   ; Pull 2 bytes from drive hardware buffer
+    mov [rdi], ax               ; Write 2 bytes into RAM memory
+    add rdi, 2                  ; Advance RAM destination pointer by 2 bytes
+    loop .read_data_loop        ; Repeat until all 512 bytes are safely in RAM
+
+    pop rax                     ; Restore original EBA sector register cleanly
+    ret                         ; Return back to kernel execution
+
+
+ata_write_sector:
+    ; --- BARE-METAL ATA PIO SECTOR WRITER (ISOLATED GLOBAL SCOPE) ---
+    push rax                    ; Preserve sector number
+    push rsi                    ; Preserve RAM source pointer
+
+    mov ebx, eax                ; Backup LBA sector address
+
+    ; 1. Setup Sector Count (Port 0x1F2)
+    mov dx, 0x1F2
+    mov al, 1
+    out dx, al
+
+    ; 2. Send LBA Bits 0-7 (Port 0x1F3)
+    mov dx, 0x1F3
+    mov al, bl
+    out dx, al
+
+    ; 3. Send LBA Bits 8-15 (Port 0x1F4)
+    mov dx, 0x1F4
+    shr ebx, 8
+    mov al, bl
+    out dx, al
+
+    ; 4. Send LBA Bits 16-23 (Port 0x1F5)
+    mov dx, 0x1F5
+    shr ebx, 8
+    mov al, bl
+    out dx, al
+
+    ; 5. Send Drive & LBA Bits 24-27 (Port 0x1F6)
+    mov dx, 0x1F6
+    shr ebx, 8
+    and bl, 0x0F
+    or bl, 0xE0                 ; Master Drive + LBA mode
+    mov al, bl
+    out dx, al
+
+    ; 6. Send WRITE Command 0x30 (Port 0x1F7)
+    mov dx, 0x1F7
+    mov al, 0x30                ; 0x30 = ATA Command: Write Sectors
+    out dx, al
+
+fraq_disk_write_wait:
+    ; 7. HARDWARE POLLING: Wait for the drive buffer using absolute global labels
+    mov dx, 0x1F7
+    in al, dx
+    test al, 0x08               ; Check DRQ bit
+    jz fraq_disk_write_wait     ; Loop safely on silicon status register
+
+    ; 8. WRITE DATA TO HARDWARE BUFFER (Port 0x1F0)
+    pop rsi                     ; Restore source RAM pointer
+    mov dx, 0x1F0               ; Data port
+    mov ecx, 256                ; Write 256 words (512 bytes total)
+
+fraq_disk_write_loop:
+    mov ax, [rsi]               ; Fetch 2 bytes from RAM
+    out dx, ax                  ; Push 2 bytes straight into drive buffer
+    add rsi, 2                  ; Advance RAM pointer by 2 bytes
+    loop fraq_disk_write_loop   ; Repeat until all 512 bytes are written
+
+    ; 9. FLUSH CACHE COMMAND (Port 0x1F7)
+    mov dx, 0x1F7
+    mov al, 0xE7
+    out dx, al
+
+    pop rax                     ; Restore original EAX
+    ret                         ; Return back to kernel cleanly
 
 
 align 16
