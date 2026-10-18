@@ -81,6 +81,8 @@ Fraqshift eliminates legacy bloat and compilation layers through a clean, multi-
     *   Transition the 64-bit Stage 2 Bootloader from legacy text-mode to an advanced VESA BIOS Extensions (VBE) linear framebuffer (1024x768 @ 32-bit color).
     *   Develop a ultra-low-overhead, hardware-accelerated Bitmap Font Engine utilizing native CPU register streaming.
     *   Build a standalone bare-metal Graphical Terminal and command interpreter (`sys.call dynamic_tokenizer`) to interface directly with keyboard interrupts.
+    *   **UPDATED:** Implemented a robust, pure geometric 16-pixel multi-row hardware Backspace tracking engine to safely erase line-wrapped console blocks.
+
 
 - [ ] **Phase 12: Storage Layer & Bare-Metal File System**  (UPCOMING)
     *   Write a native IDE/ATA hard disk controller driver using direct processor hardware I/O ports (`in`/`out`).
