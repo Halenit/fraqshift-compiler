@@ -153,6 +153,8 @@ kernel_main:
     add rdi, 413696             ; Move down exactly 101 full rows vertically (101 * 4096)
     add rdi, 80                ; Apply clean left margin padding (X=100 pixels * 4 bytes)
 
+    ; --- STEP 2B: INITIALIZE COMMAND BUFFER TRACKER ---
+    mov dword [0x550], 0        ; Set command buffer length to 0 at boot (Stored at 0x550)
 
     ; --- STEP 3: HARDWARE VERIFICATION (Enable PS/2 Keyboard Port) ---
 .verify_keyboard_interface:
@@ -400,7 +402,7 @@ kernel_main:
     mov al, 34                  ; Force standard ASCII '"'
     jmp .caps_lock_check_local
 
-    ; =========================================================================
+; =========================================================================
 ; TODO: RETURN HERE LATER TO FINALIZE ADJUSTMENTS FOR ~ ^ _ { } Symbols and brackets [ ]
 ; Note: Current mapping is stable for typing letters, numbers, and Symbols !@#$%&*()+.
 ; =========================================================================
@@ -586,9 +588,11 @@ kernel_main:
     jb .safe_no_line_break
     
     ; Force newline
+    mov [a32 0x560], rdi        ; FIXED: Save the exact true end-position of this row in RAM!
     add rdi, 65536              ; Move down 16 pixels
     sub rdi, rdx                ; Snap to left margin
-    add rdi, 80                 ; X=100 padding
+    add rdi, 80                 ; X=20 padding
+
 
 .safe_no_line_break:
     pop r14
@@ -628,10 +632,29 @@ kernel_main:
     inc rsi                     ; Move to the next font row byte in Font ROM
     loop .interactive_row_loop  ; Use optimized x86 LOOP instruction tied to RCX!
     
-    ; --- ADVANCE THE GENUINE CURSOR TO NEXT CHARACTER BOX ---
-    ; FIXED: Since RDI was never altered by the rows, it is 100% clean and perfectly aligned!
+    ; --- ADVANCE THE GENUINE CURSOR TO NEXT CHARACTER BOX & LOG TO RAM ---
+    ; 1. Save the ASCII character into our RAM buffer at 0x600
+    push rsi                    ; Preserve RSI on the stack
+    mov esi, 0x550              ; Load absolute RAM tracking address into ESI
+    mov r14d, [rsi]             ; Read current buffer length
+    cmp r14d, 63                ; Prevent buffer overflow (Max 64 characters)
+    jge .skip_ram_log           ; If buffer is full, bypass logging
+    
+    ; Save the character byte (stored in AL) into the buffer at address (0x600 + index)
+    movzx r15, r14d             ; Zero-extend length index to full 64-bit width
+    mov esi, 0x600              ; Load absolute buffer base address into ESI
+    mov [rsi + r15], al         ; Save character cleanly to RAM buffer!
+    
+    inc r14d                    ; Increment the character counter
+    mov esi, 0x550              ; Point back to length address
+    mov [rsi], r14d             ; Save the updated length back to RAM
+
+.skip_ram_log:
+    pop rsi                     ; Restore original RSI from stack
     add rdi, 48                 ; Advance cursor 12 pixels right to next char slot (12 * 4)
     jmp .terminal_input_loop    ; Return safely to keyboard listener loop
+
+
 
 
 
@@ -639,13 +662,54 @@ kernel_main:
 ; --- HARDWARE HANDLERS FOR SPECIAL TERMINAL KEYS ---
 ; ==============================================================================
 
+
+
+
 .handle_enter:
-    ; 1. Move cursor down exactly 16 pixels vertically (16 * 1024 * 4 bytes = 65536)
+    ; 1. Move cursor down exactly 16 pixels vertically
     add rdi, 65536
 
+    ; --- HIGH-PRIORITY COMMAND INTERCEPTOR WITH SAFETY LOGGING ---
+    push rsi
+    mov esi, 0x550              ; Point to our RAM character counter
+    mov r14d, [rsi]             ; Read how many characters were typed
+    
+    cmp r14d, 0                 ; Is the command buffer empty?
+    je .no_command_typed        ; Yes -> Just do a standard newline
+    
+    ; SECURITY: Null-terminate the string in RAM so string comparisons are safe
+    mov esi, 0x600
+    mov byte [rsi + r14], 0     ; Add a 0 at the end of the typed word
+
+    ; --- CHECK FOR REBOOT COMMAND ("reboot") ---
+    mov eax, [rsi]              ; Load first 4 bytes
+    cmp eax, 'rebo'             ; Does it match "rebo"?
+    jne .check_clear_cmd        ; No -> Move to next check
+    mov ax, [rsi + 4]           ; Load next 2 bytes
+    cmp ax, 'ot'                ; Does it match "ot"?
+    je .trigger_hardware_reboot ; YES -> Trigger instant hard reset!
+
+.check_clear_cmd:
+    ; --- CHECK FOR CLEAR COMMAND ("clear") ---
+    mov eax, [rsi]              ; Load first 4 bytes
+    cmp eax, 'clea'             ; Does it match "clea"?
+    jne .no_command_typed       ; No -> No known command, just do a newline
+    mov al, [rsi + 4]           ; Load 5th byte
+    cmp al, 'r'                 ; Does it match "r"?
+    je .trigger_screen_clear    ; YES -> Wipe the screen!
+
+.no_command_typed:
+    pop rsi                     ; Restore ESI cleanly
+    
+    ; Nollställ RAM-räknaren inför nästa rad
+    push rsi
+    mov esi, 0x550
+    mov dword [rsi], 0
+    pop rsi
+
     ; 2. HARDWARE ALIGNMENT: Calculate carriage return using the true graphics base
-    mov rbx, 0xFD000000            ; FIXED: Load the correct physical LFB base address into 64-bit register
-    sub rdi, rbx                    ; Subtract base address temporarily for raw math
+    mov rbx, 0xFD000000         ; Load the correct physical LFB base address into 64-bit register
+    sub rdi, rbx                ; Subtract base address temporarily for raw math
     
     mov rax, rdi
     xor rdx, rdx
@@ -655,32 +719,141 @@ kernel_main:
     sub rdi, rdx                ; Subtract X offset to snap back to absolute left margin
     add rdi, rbx                ; Add the true hardware base address back
     
-    add rdi, 80                 ; Apply clean left margin padding (X=100)
+    add rdi, 80                 ; Apply your clean left margin padding (X=20 pixels)
     jmp .terminal_input_loop    ; Jump back to wait for next key
 
+.trigger_hardware_reboot:
+    mov al, 0xFE
+    out 0x64, al                ; Send reset pulse to hardware port
+    hlt
+    jmp .trigger_hardware_reboot
+
+.trigger_screen_clear:
+    pop rsi                     ; Restore ESI stack balance
+    push rdi
+    
+    mov rdi, 0xFD000000         ; Start at true video memory base
+    mov rcx, 786432             ; Total screen pixels (1024 * 768)
+.clear_pixel_loop_bulk:
+    mov dword [rdi], 0x00000000 ; Write black pixel
+    add rdi, 4
+    loop .clear_pixel_loop_bulk
+    
+    pop rdi                     ; Restore cursor structure
+    mov rdi, 0xFD000000         ; Reset cursor location to top row
+    add rdi, 413696             ; Align to your exact Y=101 starting row
+    add rdi, 80                 ; Align to your early left margin (Pixel 20)
+    
+    push rsi
+    mov esi, 0x550
+    mov dword [rsi], 0          ; Nollställ minnet helt
+    pop rsi
+    jmp .terminal_input_loop
 
 .handle_space:
-    add rdi, 48                 ; A spacebar press moves the cursor 12 pixels right without drawing
+    add rdi, 48                 ; Move 12 pixels right
     jmp .terminal_input_loop
 
 .handle_backspace:
-    sub rdi, 48                 ; Move cursor 12 pixels back to the left (12 * 4 bytes)
+    ; --- PURE GEOMETRIC MULTI-ROW BACKSPACE (CRASH-PROOF) ---
+    push rax
+    push rbx
+    push rcx
+    push rdx
+
+    mov rax, rdi
+    mov rbx, 0xFD000000         ; QEMU LFB Base Address
+    sub rax, rbx                ; Get raw byte offset from start of screen
     
-    ; ERASE GLYPH: Overwrite character block with raw black pixels (0x00000000)
+    xor rdx, rdx
+    mov rcx, 4096               ; Stride width of one full row (4096 bytes)
+    div rcx                     ; RDX = Current X offset in bytes from row start
+    
+    cmp rdx, 80                 ; Are we at the left margin (Pixel 20 = 80 bytes)?
+    jbe .backspace_wrap_up      ; YES -> Wrap up to the previous row line naturally!
+
+    ; NO -> Standard backspace on the current line
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    
+    sub rdi, 48                 ; Move cursor 12 pixels left cleanly
+    
+    ; Sync the RAM buffer counter so the command engine stays aligned
+    push rsi
+    mov esi, 0x550
+    mov r14d, [rsi]
+    cmp r14d, 0
+    je .skip_ram_decrement
+    dec r14d
+    mov [rsi], r14d
+    mov r15d, r14d
+    mov esi, 0x600
+    mov byte [rsi + r15], 0     ; Wipe character from RAM
+.skip_ram_decrement:
+    pop rsi
+    jmp .do_pixel_erase
+
+.backspace_wrap_up:
+    ; Check if we are at the absolute top row to prevent screen bleeding
+    mov rax, rdi
+    mov rbx, 0xFD000000
+    sub rax, rbx
+    cmp rax, 413776             ; Is it the absolute top-left start (413696 + 80)?
+    jbe .backspace_cancel_top   ; YES -> Block it, we can't erase higher than the top!
+
+    ; NO -> Wrap up to the end of the previous line seamlessly!
+    sub rdi, 65536              ; Move cursor UP exactly 16 pixel rows vertically
+    sub rdi, rdx                ; Force X back to absolute 0 edge
+    add rdi, (500 * 4)          ; Snap directly to your right margin (500 * 4)
+    sub rdi, 48                 ; Step back 12 pixels to point to the last character box
+    
+    ; Sync RAM buffer counter safely
+    push rsi
+    mov esi, 0x550
+    mov r14d, [rsi]
+    cmp r14d, 0
+    je .skip_ram_wrap_dec
+    dec r14d
+    mov [rsi], r14d
+.skip_ram_wrap_dec:
+    pop rsi
+
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    jmp .do_pixel_erase
+
+.backspace_cancel_top:
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    jmp .terminal_input_loop
+
+.do_pixel_erase:
     push rdi
-    mov ecx, 16                 ; 16 rows high erasure
+    mov ecx, 16                 ; 16 rows high
 .erase_row_loop:
     push rcx
-    mov ecx, 12                 ; 12 pixels wide erasure
+    mov ecx, 12                 ; 12 pixels wide
 .erase_pixel_loop:
-    mov dword [rdi], 0x00000000 ; Write pure black pixel to screen
+    mov dword [rdi], 0x00000000 ; Pure black
     add rdi, 4
     loop .erase_pixel_loop
-    add rdi, (1024 * 4) - 48    ; Jump down to next screen row
+    add rdi, (1024 * 4) - 48    ; Next line
     pop rcx
     loop .erase_row_loop
     pop rdi
-    jmp .terminal_input_loop    ; Safely jump back to input loop
+    jmp .terminal_input_loop
+
+
+
+
+
+
 
     ; --- CRITICAL KERNEL ISOLATION BARRIER ---
     ; This infinite jump prevents the CPU from bleeding down into the compiler code!
