@@ -318,7 +318,7 @@ kernel_main:
 
     ; --- EVALUATE SPECIAL TERMINAL ACTIONS ---
     cmp al, 0x1C                ; Enter key scancode
-    je .handle_enter
+    je .handle_enter            ; FIXED: Points directly to your local command engine!
     cmp al, 0x0E                ; Backspace key scancode
     je .handle_backspace
     cmp al, 0x39                ; Spacebar key scancode
@@ -334,6 +334,24 @@ kernel_main:
     mov al, [rbx + rax] 
     cmp al, 0
     je .terminal_input_loop     ; FIXED: Now points to your true local start loop!
+
+    ; --- HIGH-SPEED RAM BUFFER LOGGER (TRUE ASCII POSITION) ---
+    push rsi
+    mov esi, 0x550              ; Load absolute RAM tracking address
+    mov r14d, [rsi]             ; Read current buffer length
+    cmp r14d, 63                ; Prevent buffer overflow (Max 64 characters)
+    jge .skip_ram_logging_done
+    
+    movzx r15, r14d             ; Zero-extend length index to full 64-bit width
+    mov esi, 0x600              ; Load absolute buffer base address
+    mov [rsi + r15], al         ; SAVE TRUE ASCII CHARACTER TO RAM BUFFER!
+    
+    inc r14d                    ; Increment the character counter by exactly 1
+    mov esi, 0x550
+    mov [rsi], r14d             ; Save the updated length back to RAM
+
+.skip_ram_logging_done:
+    pop rsi                     ; Restore ESI cleanly
 
 
 
@@ -602,9 +620,12 @@ kernel_main:
 
 
 
+    
 
 
 .start_draw:
+
+
     mov r8, rdi                 ; FIXED: Copy core cursor to R8! R8 will do all the dirty row jumping.
     mov rcx, 16                 ; RCX = Outer loop counter (16 pixel rows high)
 
@@ -666,46 +687,37 @@ kernel_main:
 
 
 .handle_enter:
-    ; 1. Move cursor down exactly 16 pixels vertically
+    ; 1. Move cursor down exactly 16 pixels vertically for the next row
     add rdi, 65536
 
-    ; --- HIGH-PRIORITY COMMAND INTERCEPTOR WITH SAFETY LOGGING ---
-    push rsi
-    mov esi, 0x550              ; Point to our RAM character counter
-    mov r14d, [rsi]             ; Read how many characters were typed
-    
-    cmp r14d, 0                 ; Is the command buffer empty?
-    je .no_command_typed        ; Yes -> Just do a standard newline
-    
-    ; SECURITY: Null-terminate the string in RAM so string comparisons are safe
-    mov esi, 0x600
-    mov byte [rsi + r14], 0     ; Add a 0 at the end of the typed word
+    ; --- VARIABLY ISOLATED SAFETY CHECK ---
+    ; Check if the user typed anything on the current line before checking memory
+    mov rax, 0x550
+    mov r14d, [rax]             ; Read current row character counter
+    cmp r14d, 0                 ; Is the row completely empty?
+    je .no_command_typed        ; YES -> Jump straight to normal newline and DO NOT read ghost characters!
 
-    ; --- CHECK FOR REBOOT COMMAND ("reboot") ---
-    mov eax, [rsi]              ; Load first 4 bytes
-    cmp eax, 'rebo'             ; Does it match "rebo"?
-    jne .check_clear_cmd        ; No -> Move to next check
-    mov ax, [rsi + 4]           ; Load next 2 bytes
-    cmp ax, 'ot'                ; Does it match "ot"?
-    je .trigger_hardware_reboot ; YES -> Trigger instant hard reset!
+    ; --- ABSOLUTE FIRST-BYTE COMMAND PARSER ---
+    ; If the line was not empty, check the absolute first character at 0x600
+    mov rsi, 0x600
+    mov al, [rsi]               ; Load the true start byte from RAM
 
-.check_clear_cmd:
-    ; --- CHECK FOR CLEAR COMMAND ("clear") ---
-    mov eax, [rsi]              ; Load first 4 bytes
-    cmp eax, 'clea'             ; Does it match "clea"?
-    jne .no_command_typed       ; No -> No known command, just do a newline
-    mov al, [rsi + 4]           ; Load 5th byte
-    cmp al, 'r'                 ; Does it match "r"?
-    je .trigger_screen_clear    ; YES -> Wipe the screen!
+    ; Check for Clear Command ('c' or 'C')
+    cmp al, 'c'
+    je .trigger_screen_clear
+    cmp al, 'C'
+    je .trigger_screen_clear
+
+    ; Check for Reboot Command ('r' or 'R')
+    cmp al, 'r'
+    je .trigger_hardware_reboot
+    cmp al, 'R'
+    je .trigger_hardware_reboot
 
 .no_command_typed:
-    pop rsi                     ; Restore ESI cleanly
-    
-    ; Nollställ RAM-räknaren inför nästa rad
-    push rsi
-    mov esi, 0x550
-    mov dword [rsi], 0
-    pop rsi
+    ; Reset the RAM character counter back to 0 for the next new row
+    mov rax, 0x550
+    mov dword [rax], 0
 
     ; 2. HARDWARE ALIGNMENT: Calculate carriage return using the true graphics base
     mov rbx, 0xFD000000         ; Load the correct physical LFB base address into 64-bit register
@@ -724,31 +736,37 @@ kernel_main:
 
 .trigger_hardware_reboot:
     mov al, 0xFE
-    out 0x64, al                ; Send reset pulse to hardware port
+    out 0x64, al                ; Send a direct reset pulse to the PS/2 controller
     hlt
     jmp .trigger_hardware_reboot
 
 .trigger_screen_clear:
-    pop rsi                     ; Restore ESI stack balance
-    push rdi
-    
-    mov rdi, 0xFD000000         ; Start at true video memory base
-    mov rcx, 786432             ; Total screen pixels (1024 * 768)
+    ; Pure geometric and isolated full video memory blanket wipe (1024 * 768)
+    mov r11, 0xFD000000         ; Start at true LFB base address
+    mov rax, 786432             ; Total screen pixels to overwrite with black
 .clear_pixel_loop_bulk:
-    mov dword [rdi], 0x00000000 ; Write black pixel
-    add rdi, 4
-    loop .clear_pixel_loop_bulk
+    mov dword [r11], 0x00000000 ; Write pure black pixel directly to screen
+    add r11, 4                  
+    dec rax                     ; Decrement our safe counter
+    jnz .clear_pixel_loop_bulk  ; Keep wiping until RAX hits 0
     
-    pop rdi                     ; Restore cursor structure
-    mov rdi, 0xFD000000         ; Reset cursor location to top row
-    add rdi, 413696             ; Align to your exact Y=101 starting row
-    add rdi, 80                 ; Align to your early left margin (Pixel 20)
+    ; Reset your text cursor (RDI) back to the absolute top start row position
+    mov rdi, 0xFD000000         
+    add rdi, 413696             ; Align with text row Y=101
+    add rdi, 80                 ; Align with your early left margin X=20
     
-    push rsi
-    mov esi, 0x550
-    mov dword [rsi], 0          ; Nollställ minnet helt
-    pop rsi
-    jmp .terminal_input_loop
+    ; Force clear the row count to 0 so the new top line starts completely fresh
+    xor rax, rax                ; Safely zero out RAX register
+    mov rbx, 0x550              ; Point directly to the row tracker memory address
+    mov [rbx], eax              ; Write a clean 0 to memory using safe registers
+    jmp .terminal_input_loop    ; Jump straight back to look for the next key
+
+
+
+
+
+
+
 
 .handle_space:
     add rdi, 48                 ; Move 12 pixels right
