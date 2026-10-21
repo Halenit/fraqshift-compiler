@@ -15,7 +15,7 @@ The entire compiler pipeline (Tokenizer → Symbol Table → Code Generator) now
 
 * **Autonomous Self-Hosting Supremacy:** The compiler is written in Fraqshift, compiling its own source code directly inside the QEMU bare-metal sandbox.
 * **Pure Bare-Metal Kernel Execution:** Generates flat binary files that boot directly on x86-64 hardware without an underlying OS layer.
-* **Silicon-Level Control:** Multi-target architecture built to interface directly with VGA video buffers (`0xB8000`) and PS/2 keyboard hardware ports.
+* **Silicon-Level Control:** Multi-target architecture built to interface directly with custom VESA Linear Framebuffers, PS/2 keyboard/mouse buses, and legacy ATA drive ports.
 * **Inline Hardware Interfacing:** Native support for 64-bit Assembly registers and high-speed RAM pointer manipulation (`*ptr = rax`) with zero-copy overhead.
 * **Pure NASM Compilation Pipeline:** Leverages a local Netwide Assembler (NASM) engine for zero-dependency hardware binaries.
 
@@ -32,7 +32,7 @@ Fraqshift uses clean data definitions paired with immediate hardware execution t
 var addr_one = 327680
 *addr_one = 73              ; 'I'
 
-; 2. Säkra globala variabelregistreringar i Symboltabellen
+; 2. Secure global variable registrations in the Symbol Table
 var table_reg = 328000
 *table_reg = 88             ; Variable 'X'
 
@@ -77,25 +77,36 @@ Fraqshift eliminates legacy bloat and compilation layers through a clean, multi-
     *   Designed the final raw machine code emitter (`*output_ptr = rax`) utilizing standard x86-64 calling conventions.
     *   Successfully executed the historical bootstrapping sequence, allowing Fraqshift to compile and run on pure kisel without a single line of Python.
       
-- [ ] **Phase 11: Human Interface & Graphical Terminal**  (ACTIVE)
-    *   Transition the 64-bit Stage 2 Bootloader from legacy text-mode to an advanced VESA BIOS Extensions (VBE) linear framebuffer (1024x768 @ 32-bit color).
-    *   Develop a ultra-low-overhead, hardware-accelerated Bitmap Font Engine utilizing native CPU register streaming.
-    *   Build a standalone bare-metal Graphical Terminal and command interpreter (`sys.call dynamic_tokenizer`) to interface directly with keyboard interrupts.
-    *   **UPDATED:** Implemented a robust, pure geometric 16-pixel multi-row hardware Backspace tracking engine to safely erase line-wrapped console blocks.
+- [ ] **Phase 11: Human Interface & Cyberpunk HUD Desktop**  (ACTIVE)
+    *   Transition the 64-bit Stage 2 Bootloader from legacy text-mode to an advanced VESA BIOS Extensions (VBE) linear framebuffer (640x480 @ High Color).
+    *   Develop an ultra-low-overhead, hardware-accelerated Bitmap Font Engine utilizing native CPU register streaming and Font ROM bitmapping.
+    *   **UPDATED DESIGN:** Implement a custom "Hacker HUD Control Center" workspace layout. Move the traditional desktop taskbar to a sleek, ergonomic Top Bar bounded by an electric neon-purple horizontal line.
+    *   **UPDATED DESIGN:** Build a non-overlapping Tiling Split-Screen environment to prevent bare-metal drawing collision over the hardware background image. Dedicated left window space mapped for a lightweight web terminal, and right window block mapped for CLI execution.
+    *   Implement an interactive klick-hitbox engine tracking PS/2 mouse deltas and click state flags (`r13b`) to allow fluid window repositioning.
 
+- [ ] **Phase 12: Memory Matrix Isolation & Ring 3 Security**  (UPCOMING)
+    *   Build out processor Model-Specific Registers (MSR) and safe 64-bit Paging boundary walls.
+    *   Enforce hardware-level memory clipping, establishing a permanent partition between the secure Kernel Space and isolated application processes (Ring 3 User Mode) to stop execution-level crashes.
 
-- [ ] **Phase 12: Storage Layer & Bare-Metal File System**  (UPCOMING)
-    *   Write a native IDE/ATA hard disk controller driver using direct processor hardware I/O ports (`in`/`out`).
-    *   Implement a robust FAT16/FAT32 file system driver to handle raw file allocation, reading, and writing directly on hardware sectors.
+- [ ] **Phase 13: Storage Layer & ATA File System (FraqFS)**  (UPCOMING)
+    *   Optimize the native IDE/ATA hard disk controller driver to allow direct sector data pipelining.
+    *   Implement an light dynamic directory file allocation table to track, read, and write stored documents using real named addresses without raw sector referencing.
 
-- [ ] **Phase 13: Deterministic Multitasking & Ring 3 Security**  (UPCOMING)
-    *   Build a high-speed hardware Task Scheduler (Context Switcher) driven by PIT timer interrupts.
-    *   Implement x86-64 Ring 3 (User Mode) isolation, enforcing hardware-level memory clipping to protect the core kernel from application-level failures.
+- [ ] **Phase 14: PCI-Bus Scanning & Intel e1000 Netstack**  (UPCOMING)
+    *   Develop a bare-metal PCI-bus hardware scanner to discover and communicate with onboard peripherals.
+    *   Write a native hardware driver for the emulated Intel e1000 Gigabit Ethernet network controller utilizing Memory-Mapped I/O (MMIO).
+    *   Design a zero-copy, single-pass network stack managing ARP, IPv4/IPv6, UDP, and TCP protocols directly inside high-speed registers to execute remote text-parsing web connections.
 
-- [ ] **Phase 14: The Internet Revolution & Single-Pass Netstack**  (UPCOMING)
-    *   Develop a native network interface card (NIC) driver for the Intel e1000 Gigabit Ethernet controller using Memory-Mapped I/O (MMIO).
-    *   Code a zero-copy, single-pass network stack handling ARP, IPv4/IPv6, UDP, and TCP protocols directly inside the CPU registers.
-    *   Achieve standalone network connectivity, downloading and rendering remote resources entirely on bare metal.
+## Project Issue Tracker (Active Defect Log)
+
+*   **Issue #01: Window Dragging "Windows 95" Trail Feedback Loop**
+    *   *Severity:* Medium | *Component:* VRAM Compositor
+    *   *Description:* Rapid updates to RAM window coordinates during active PS/2 mouse tracking leave ghosting trail patches due to the execution latency of full ATA-drive disk-to-screen background re-streaming.
+    *   *Target Fix:* Refactor loop to intercept real-time movement deltas with a lightweight wireframe boundary box, deferring the heavy disk-stream refresh until button release transitions.
+*   **Issue #02: Taskbar Start Button Icon Corruption**
+    *   *Severity:* Low | *Component:* Blit Engine
+    *   *Description:* The circular cyber-bat raw `.bin` asset renders compressed or exhibits green/yellow pixel noise on the black taskbar due to a Little-Endian byte-order conflict and stream alignment row padding.
+    *   *Target Fix:* Adjust byte-width specifications inside the font/icon asset compiler loop to match standard LFB channels.
 
 ## License
 
