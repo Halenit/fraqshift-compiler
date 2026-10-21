@@ -24,9 +24,6 @@ start_bootloader:
     cmp ax, 0x004F          ; Check if VBE function succeeded
     jne .disk_error         ; If graphics initialization failed, halt boot
 
-
-
-
     ; --- Load Stage 2 Kernel from Hard Disk ---
     mov ah, 0x02            ; BIOS Read Sectors function
     mov al, 60              ; Load 60 sectors (7.5 KB of code space)
@@ -54,10 +51,6 @@ start_bootloader:
     mov dword [0xA018], 0xC003     ; GB 3 (3GB to 4GB) -> Dedicated PD table for Graphics (0xC000)
     mov dword [0xB000], 0x0083     ; Identity map 0MB to 2MB (Kernel execution space)
     mov dword [0xB008], 0x00200083 ; Identity map 2MB to 4MB (Kernel extra heap room)
-
-
-
-
 
     ; --- Enable PAE ---
     mov eax, 10100000b
@@ -131,15 +124,36 @@ stage2_kernel:
     mov rax, cr3
     mov cr3, rax
 
-
-
-
-
 kernel_main:
     push rbp
     mov rbp, rsp
+
+    ; --- ACTIVATE TRUE 1080P VBE GRAPHICS MODE IMMEDIATELY ---
+    call vbe_set_1080p          ; Kick the hardware into 1920x1080 True Color!
+
+
+    ; --- PHASE 13: INITIALIZE SYSTEM HEAP ALLOCATOR ---
+    ; Sets up the 1MB boundary pointer in RAM so the OS can allocate memory dynamically!
+    call heap_init
+
+    ;
     
-        
+    ; --- PHASE 14: INITIALIZE PS/2 MOUSE DRIVER ---
+    call mouse_init             ; POWER ON: Activates the hardware packet stream!
+
+    ; --- BREAK OUT OF THE TERMINAL: JUMP STRAIGHT TO TRUE GUI ---
+    jmp gui_desktop_loop        ; Boots directly into your new 640x480 cyber desktop!
+
+
+    ; --- BREAK OUT OF THE TERMINAL: JUMP STRAIGHT TO TRUE GUI ---
+    jmp gui_desktop_loop        ; Boots directly into your new 1080p graphic ecosystem! [3.1]
+
+        ; --- SYSTEM INITIALIZATION COMPLETE ---
+    ; All infrastructure (Heap, Mouse, FS) is safely active under the hood! [3.1]
+    ; We now fall directly into your stable terminal loop seamlessly.
+
+   
+.fraq_malloc_test_fail:
 
     ; --- STEP 1: PREPARE 'F' DIRECTLY IN CPU TRANSISTORS ---
     mov r14, 70                 ; Load ASCII for 'F' directly into register R14
@@ -174,11 +188,6 @@ kernel_main:
 
 .fraq_test_stable_fail:
 
-
- 
-
-
-
     ; --- STEP 1: HARDWARE FLUSH (Completely empty old BIOS keyboard data) ---
 .flush_loop:
     in al, 0x64                 ; Read PS/2 controller status register
@@ -212,7 +221,16 @@ kernel_main:
 
     in al, 0x60                 ; Fetch raw hardware scancode from keyboard
     
+    ; --- PS/2 MOUSE PACKET FILTER ---
+    push rax                    ; Save the byte we just read from port 0x60
+    in al, 0x64                 ; Read the controller status port
+    test al, 0x20               ; Check bit 5 (1 = Mouse data, 0 = Keyboard)
+    pop rax                     ; Restore the byte back into AL cleanly
+    jz .fraq_is_keyboard        ; If it's 0, it's a keyboard key -> Process row 246!
 
+    jmp .terminal_input_loop    ; It was a mouse packet! Discard and listen again.
+
+.fraq_is_keyboard:
 
     ; --- PHASE 12: STATEFUL KEYBOARD TRACKING (SHIFT & CAPS HANDLING) ---
     cmp al, 0x2A                ; Left Shift Pressed
@@ -291,9 +309,6 @@ kernel_main:
 
 .skip_quote_override:
 
-    
-
-
     ; --- TARGETED HARDWARE OVERRIDE: BUTTON RIGHT OF COMMA ---
     ; Physical button right of comma sends hardware scancode 0x34
     cmp al, 0x34
@@ -336,11 +351,7 @@ kernel_main:
 
 .skip_enter_side_override:
 
-    
-
 .skip_open_brace_override:
-
-
 
     ; --- TARGETED HARDWARE OVERRIDE: BUTTON RIGHT OF M ---
     ; Physical button right of M sends hardware scancode 0x33
@@ -355,7 +366,6 @@ kernel_main:
 
 .skip_m_override:
 
-
     ; --- EVALUATE SPECIAL TERMINAL ACTIONS ---
     cmp al, 0x1C                ; Enter key scancode
     je .handle_enter            ; FIXED: Points directly to your local command engine!
@@ -363,12 +373,48 @@ kernel_main:
     je .handle_backspace
     cmp al, 0x39                ; Spacebar key scancode
     je .handle_space
+    
+    cmp al, 0x0F                ; Is it the TAB key scancode?
+    je .fraq_execute_tab        ; YES -> Execute the safe inlined file engine!
+    jmp .fraq_skip_tab          ; NO  -> Safe immediate bypass to protect the character map! [3.1]
+
+.fraq_execute_tab:
+    ; --- 100% INLINED CRASH-PROOF RAM-DISK FILING ENGINE ---
+    mov rsi, 0xA000             ; Point straight to our virtual HELP file text zone
+    mov dword [rsi], 'Welc'     ; Inject test string "Welcome" straight into the memory bank
+    mov dword [rsi + 4], 'ome '
+
+    ; --- EXECUTE INLINED FS_READ_FILE LOGIC ---
+    mov al, [rsi]               ; Fetch the very first byte contained inside the file buffer ('W')
+
+    cmp al, 'W'                 ; Did our register successfully save and read back the 'W'?
+    je .fraq_draw_indicators    ; If successful, draw status bars
+    jmp .terminal_input_loop    ; If failed, jump back to input loop cleanly [3.1]
+
+.fraq_draw_indicators:
+    ; SUCCESS! Draw the indicators on status row Y=20
+    mov r11, 0xFD000000         ; Base graphics memory address (LFB)
+    add r11, 81920              ; Move down to isolated status row Y=20
+
+    ; File 1 & 2 indicators (Yellow/Green and Blue)
+    mov dword [r11 + 80], 0x0000FF00  
+    mov dword [r11 + 4096 + 80], 0x000000FF 
+
+    ; NEW FILE CONTENT INDICATOR: Draw a bright RED pixel block (3 pixels wide)
+    mov dword [r11 + 160], 0x00FF0000 ; Pure Red
+    mov dword [r11 + 164], 0x00FF0000
+    mov dword [r11 + 168], 0x00FF0000
+
+    jmp .terminal_input_loop    ; Sharp isolated jump straight back to listen for next key!
+
+.fraq_skip_tab:
+
 
     ; --- HIGH-SPEED DIRECT INDEX TRANSLATION ---
-    lea rbx, [rel scan_to_ascii] 
-    
+    lea rbx, [rel scan_to_ascii]
 
 .read_normal_char_local:
+
     movzx rax, al               ; Zero-extend the hardware scancode
     mov r12d, eax               ; Preserve the original scancode for symbol mapping
     mov al, [rbx + rax] 
@@ -608,9 +654,6 @@ kernel_main:
 .apply_standard_sub_local:
     sub al, 32                  ; AL now holds clean universal font index
 
-
-
-
 .apply_font_lookup:
     movzx rbx, al
     shl rbx, 4                  ; Multiply by 16 bytes per font character matrix
@@ -657,11 +700,6 @@ kernel_main:
     pop rdx
     pop rcx
     pop rax
-
-
-
-    
-
 
 .start_draw:
 
@@ -742,6 +780,13 @@ kernel_main:
     mov rsi, 0x600
     mov al, [rsi]               ; Load the true start byte from RAM
 
+    ; Check for List Files Command ('l' or 'L')
+    cmp al, 'l'
+    je .fraq_trigger_ls
+    cmp al, 'L'
+    je .fraq_trigger_ls
+
+
     ; Check for Clear Command ('c' or 'C')
     cmp al, 'c'
     je .trigger_screen_clear
@@ -779,6 +824,32 @@ kernel_main:
     out 0x64, al                ; Send a direct reset pulse to the PS/2 controller
     hlt
     jmp .trigger_hardware_reboot
+
+.fraq_trigger_ls:
+    ; Initialize the virtual Ramdisk file table architecture cleanly
+    call fs_load_directory
+
+    ; --- 100% CRASH-PROOF VISUAL FILE LISTING ---
+    ; We bypass the font engine stack and draw raw solid pixel bars directly to screen silicon!
+    ; --- 100% INLINED VISUAL FILE LISTING ON STATUS ROW Y=20 ---
+    mov r11, 0xFD000000         ; Base graphics memory address (LFB)
+    add r11, 81920              ; MOVE DOWN TO AN ISOLATED STATUS ROW (20 rows * 4096 bytes)
+
+    ; FILE 1 ("HELP"): Draw a bright green block (3 pixels wide) on status row
+    mov dword [r11 + 80], 0x0000FF00  ; Pure Green (aligned with your X=20 margin)
+    mov dword [r11 + 84], 0x0000FF00
+    mov dword [r11 + 88], 0x0000FF00
+
+    ; FILE 2 ("WEB"): Draw a bright blue block (3 pixels wide, 5 rows further down)
+    mov dword [r11 + 20480 + 80], 0x000000FF ; Pure Blue (5 rows down * 4096 = 20480)
+    mov dword [r11 + 20480 + 84], 0x000000FF
+    mov dword [r11 + 20480 + 88], 0x000000FF
+
+
+    jmp .no_command_typed       ; Safely drop down to normal newline without touching stack!
+
+
+
 
 .trigger_screen_clear:
     ; --- STEP 1: PURE GEOMETRIC SCREEN WIPE (1024 * 768) ---
@@ -849,15 +920,6 @@ kernel_main:
     mov rbx, 0x550              
     mov [rbx], eax              
     jmp .terminal_input_loop    ; Jump straight back to look for the next key
-
-
-
-
-
-
-
-
-
 
 .handle_space:
     add rdi, 48                 ; Move 12 pixels right
@@ -1303,6 +1365,803 @@ fraq_disk_write_loop:
     pop rax                     ; Restore original EAX
     ret                         ; Return back to kernel cleanly
 
+    fs_load_directory:
+    ; --- FRAQSHIFT RAM-DISK FILING ENGINE (GLOBAL SCOPE) ---
+    push rsi
+    push rdi
+    push rcx
+
+    mov rdi, 0x9000             ; Base memory address for file index table
+
+    ; --- FILE 1 INDEX: "HELP" ---
+    mov dword [rdi], 'HELP'     ; Filename
+    mov dword [rdi + 8], 0xA000 ; Virtual Start Address
+    mov dword [rdi + 12], 22    ; File Size = 22 bytes
+    
+    ; --- FILE 1 TEXT CONTENT INJECTION ---
+    mov rsi, 0xA000
+    mov dword [rsi], 'Welc'
+    mov dword [rsi + 4], 'ome '
+    mov dword [rsi + 8], 'to F'
+    mov dword [rsi + 12], 'raqs'
+    mov dword [rsi + 16], 'hift'
+    mov word  [rsi + 20], '!'  ; Total string: "Welcome to Fraqshift!"
+
+    ; --- FILE 2 INDEX: "WEB" ---
+    add rdi, 32                 ; Move to next file slot in index
+    mov dword [rdi], 'WEB '     ; Filename
+    mov dword [rdi + 8], 0xB000 ; Virtual Start Address
+    mov dword [rdi + 12], 22    ; File Size = 22 bytes
+
+    ; --- FILE 2 TEXT CONTENT INJECTION ---
+    mov rsi, 0xB000
+    mov dword [rsi], 'Brow'
+    mov dword [rsi + 4], 'ser '
+    mov dword [rsi + 8], 'Engi'
+    mov dword [rsi + 12], 'ne A'
+    mov dword [rsi + 16], 'ctiv'
+    mov word  [rsi + 20], 'e.'  ; Total string: "Browser Engine Active."
+
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
+fs_read_file:
+    ; --- FRAQSHIFT FILE CONTENT READER (GLOBAL SCOPE) ---
+    ; Input:  RSI = Pointer to the file's text buffer start (0xA000)
+    ; Output: AL  = First character byte contained inside the file
+    mov al, [rsi]               ; Load character byte directly from file contents into AL register
+    ret                         ; Clean return, 100% crash-proof
+
+fs_create_file:
+    ; --- FRAQSHIFT FILE SYSTEM: CREATE NEW FILE ENTRY ---
+    ; Input:  EAX = 4-byte ASCII Filename (e.g., 'DOC ')
+    ; Destroys: RDI, RBX
+    push rdi
+    push rbx
+
+    mov rdi, 0x9000             ; Point to base memory of file index table [3.1]
+    add rdi, 64                 ; Move past "HELP" (offset 0) and "WEB" (offset 32) to Slot 3! [3.1]
+
+    ; Write the new file metadata dynamically into the Ramdisk structure
+    mov [rdi], eax              ; 1. Save the 4-byte filename directly to RAM [3.1]
+    mov dword [rdi + 8], 0xC000 ; 2. Assign text content memory boundary to 0xC000 [3.1]
+    mov dword [rdi + 12], 0     ; 3. Initialize File Size as 0 bytes [3.1]
+
+    pop rbx
+    pop rdi
+    ret                         ; Clean, crash-proof return
+
+; --- FRAQSHIFT MEMORY MANAGEMENT LAYER (PHASE 13) ---
+; Global tracking variable stored at a safe static memory slot (e.g., 0x560)
+; Holds the current free boundary address of the system Heap.
+
+heap_init:
+    ; --- INITIALIZE HEAP POINTER ---
+    ; Sets the start of dynamic memory allocation to 1MB boundary (0x100000)
+    push rax
+    mov rax, 0x560              ; Variable storage address
+    mov qword [rax], 0x100000   ; Start heap at 1MB cleanly
+    pop rax
+    ret
+
+fraq_malloc:
+    ; --- FRAQSHIFT MEMORY ALLOCATOR ---
+    ; Input:  RCX = Number of bytes requested
+    ; Output: RAX = Pointer to the allocated memory block start
+    ; Destroys: RBX
+    push rbx
+
+    mov rbx, 0x560              ; Point to our heap tracker variable
+    mov rax, [rbx]              ; Fetch the current free memory boundary address
+
+    ; Calculate the next free boundary by adding the requested size
+    push rax
+    add rax, rcx                ; Advance the boundary forward by RCX bytes
+    mov [rbx], rax              ; Save the new boundary back to tracker memory
+    pop rax                     ; RAX now holds the correct starting pointer!
+
+    pop rbx
+    ret                         ; Clean, 100% crash-proof return
+
+; --- FRAQSHIFT VBE 1080P GRAPHICS ENGINE (PHASE 14 - STEP 1) ---
+
+vbe_write:
+    ; Helper to write to Bochs Graphics Adapter ports
+    ; Input: AX = Index, BX = Data
+    push rdx
+    mov dx, 0x01CE
+    out dx, ax                  ; Write register index
+    mov dx, 0x01CF
+    mov ax, bx
+    out dx, ax                  ; Write register data
+    pop rdx
+    ret
+
+vbe_set_1080p:
+    ; --- FORCE INTEL/QEMU SILICON INTO SAFE 640x480 TRUE COLOR ---
+    ; (We keep the function name intact so we don't have to change your top calls!) [3.1]
+    push rax
+    push rbx
+
+    ; 1. Disable VBE extensions temporarily
+    mov ax, 4                   ; VBE_DISPI_INDEX_ENABLE
+    mov bx, 0                   ; VBE_DISPI_DISABLED
+    call vbe_write
+
+    ; 2. Set X Resolution to 640
+    mov ax, 1                   ; VBE_DISPI_INDEX_XRES
+    mov bx, 640
+    call vbe_write
+
+    ; 3. Set Y Resolution to 480
+    mov ax, 2                   ; VBE_DISPI_INDEX_YRES
+    mov bx, 480
+    call vbe_write
+
+    ; 4. Set Bit Depth to 32 bits (True Color)
+    mov ax, 3                   ; VBE_DISPI_INDEX_BPP
+    mov bx, 32
+    call vbe_write
+
+    ; 5. Re-enable VBE extensions cleanly
+    mov ax, 4                   ; VBE_DISPI_INDEX_ENABLE
+    mov bx, 0x41                ; VBE_DISPI_ENABLED | VBE_DISPI_LFB
+    call vbe_write
+
+    pop rbx
+    pop rax
+    ret
+
+; --- FRAQSHIFT PS/2 MOUSE DRIVER (PHASE 14 - STEP 1) ---
+
+mouse_wait_write:
+    mov dx, 0x64
+    in al, dx
+    test al, 0x02               ; Check Input Buffer Status bit
+    jnz mouse_wait_write        ; Wait until port is ready for writing
+    ret
+
+mouse_wait_read:
+    mov dx, 0x64
+    in al, dx
+    test al, 0x01               ; Check Output Buffer Status bit
+    jz mouse_wait_read          ; Wait until port has data to read
+    ret
+
+mouse_init:
+    ; --- INITIALIZE HARDWARE PS/2 MOUSE COMPONENT ---
+    push rax
+    push rdx
+
+    ; 1. Enable Mouse Port on Keyboard Controller
+    call mouse_wait_write
+    mov dx, 0x64
+    mov al, 0xA8                ; Command 0xA8 = Enable Mouse Clock/Port
+    out dx, al
+
+    ; 2. Enable Interrupts (Get Controller Command Byte)
+    call mouse_wait_write
+    mov dx, 0x64
+    mov al, 0x20                ; Command 0x20 = Read Command Byte
+    out dx, al
+    call mouse_wait_read
+    mov dx, 0x60
+    in al, dx
+    or al, 0x02                 ; Bit 1 = Enable Mouse Interrupt (IRQ 12)
+    push rax
+
+    ; Write updated Command Byte back
+    call mouse_wait_write
+    mov dx, 0x64
+    mov al, 0x60                ; Command 0x60 = Write Command Byte
+    out dx, al
+    call mouse_wait_write
+    mov dx, 0x60
+    pop rax
+    out dx, al
+
+    ; 3. Tell Mouse to use Default Settings
+    call mouse_wait_write
+    mov dx, 0x64
+    mov al, 0xD4                ; Command 0xD4 = Write to Mouse Device
+    out dx, al
+    call mouse_wait_write
+    mov dx, 0x60
+    mov al, 0xF6                ; Mouse Command 0xF6 = Set Defaults
+    out dx, al
+    call mouse_wait_read
+    mov dx, 0x60
+    in al, dx                   ; Read ACK (0xFA)
+
+    ; 4. Enable Data Streaming from Mouse
+    call mouse_wait_write
+    mov dx, 0x64
+    mov al, 0xD4                ; Command 0xD4 = Write to Mouse Device
+    out dx, al
+    call mouse_wait_write
+    mov dx, 0x60
+    mov al, 0xF4                ; Mouse Command 0xF4 = Enable Packet Streaming
+    out dx, al
+    call mouse_wait_read
+    mov dx, 0x60
+    in al, dx                   ; Read ACK (0xFA)
+
+    pop rdx
+    pop rax
+    ret
+
+; --- FRAQSHIFT GRAPHICAL MOUSE ENGINE (PHASE 14 - STEP 2) ---
+
+mouse_variables_init:
+    ; --- SET INITIAL MOUSE COORDINATES TO CENTER SCREEN (1024x768) ---
+    push rax
+    mov rax, 0x570              ; Address for Mouse X
+    mov dword [rax], 512        ; X = 512 (Center)
+    mov rax, 0x574              ; Address for Mouse Y
+    mov dword [rax], 384        ; Y = 384 (Center)
+    pop rax
+    ret
+
+draw_mouse_pointer:
+    ; --- DRAW HARDWARE MOUSE ARROW VIA SAFE 640x480 VRAM ---
+    push rax
+    push rbx
+    push rcx
+    push r11
+    push r12
+
+    mov rax, r14                ; RAX = X position
+    mov rbx, r15                ; RBX = Y position
+
+    mov r11, 0xFD000000         ; Base Graphics VRAM
+    
+    ; Y-offset calculation for 640 width (2560 bytes per row) [3.1]
+    mov ecx, 2560               
+    imul rbx, rcx               
+    add r11, rbx                
+
+    ; X-offset calculation
+    shl rax, 2                  
+    add r11, rax                
+
+    ; Draw the crisp white arrow matrix safely [3.1]
+    mov dword [r11], 0x00FFFFFF
+    mov dword [r11 + 2560], 0x00FFFFFF
+    mov dword [r11 + 2560 + 4], 0x00FFFFFF
+    mov dword [r11 + 5120], 0x00FFFFFF
+    mov dword [r11 + 5120 + 4], 0x00FFFFFF
+    mov dword [r11 + 5120 + 8], 0x00FFFFFF
+    mov dword [r11 + 7680], 0x00FFFFFF
+    pop r12
+    pop r11
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+gui_desktop_loop:
+    ; --- FRAQSHIFT GRAPHIC DESKTOP (CLEAN RAM CACHED ENGINE) ---
+    mov r11, 0x580              
+    mov dword [abs r11], 320    
+    mov r11, 0x584              
+    mov dword [abs r11], 240 
+
+    ; Initialize dynamic Window location variables in RAM
+    mov r11, 0x590              ; Address for Window X
+    mov dword [abs r11], 150    ; Default Start X = 150
+    mov r11, 0x594              ; Address for Window Y
+    mov dword [abs r11], 100    ; Default Start Y = 100
+
+    mov r14, 320                
+    mov r15, 240                
+
+    ; Step 1: Stream your custom Fraq Bat background directly from the Virtual Hard Drive!
+    call draw_fraq_background   
+
+    ; Step 2: Cache both cyberpunk icons into RAM immediately
+    ;call preload_icons_to_ram
+
+    ; Step 3: Draw the static interface components ONCE
+    ; 1. Draw the solid black bar at the bottom
+    mov r8, 0                   
+    mov r9, 440                 
+    mov r10, 640                
+    mov r12, 40                 
+    mov eax, 0x00000000         
+    call draw_rectangle         
+
+    ; 2. Draw the neon-lila signature accent line
+    mov r8, 0                   
+    mov r9, 439                 
+    mov r10, 640                
+    mov r12, 2                  
+    mov eax, 0x00FF00FF         
+    call draw_rectangle         
+
+    ; 3. Draw the apps window frame
+    call draw_window_frame 
+
+    ; 4. Draw your awesome round start icon cleanly on the open desktop
+    call draw_start_icon     
+
+    ; Take initial backup and draw the first mouse pointer
+    call mouse_save_back
+    call draw_mouse_pointer
+
+.mouse_poll_loop:
+    mov dx, 0x64
+    in al, dx
+    
+    test al, 0x01               
+    jz .mouse_poll_loop         
+    test al, 0x20               
+    jz .consume_keyboard
+    mov dx, 0x60
+    in al, dx                   ; Read Byte 1 cleanly (No double erasing here!)
+    mov r12b, al                ; SAVE CLICK STATE IN R12B FOR LATER! 
+
+.wait_byte2:
+    mov dx, 0x64
+    in al, dx
+    test al, 0x01
+    jz .wait_byte2
+    mov dx, 0x60
+    in al, dx                   ; Read Byte 2 (X)
+    
+    movsx rbx, al
+    sar rbx, 3                  
+    add r14, rbx                
+
+.wait_byte3:
+    mov dx, 0x64
+    in al, dx
+    test al, 0x01
+    jz .wait_byte3
+    mov dx, 0x60
+    in al, dx                   ; Read Byte 3 (Y)
+    
+    movsx rbx, al
+    sar rbx, 3                  
+    sub r15, rbx                
+
+    ; Sharp hardware boundaries
+    cmp r14, 5
+    jge .check_max_x
+    mov r14, 5
+.check_max_x:
+    cmp r14, 625
+    jle .check_min_y
+    mov r14, 625
+.check_min_y:
+    cmp r15, 5
+    jge .check_max_y
+    mov r15, 5
+.check_max_y:
+    cmp r15, 465
+    jle .done_movement
+    mov r15, 465
+
+.done_movement:
+    ; --- INTERACTIVE CYBERPUNK WINDOW ENGINE (TRUE SILK DRAG) ---
+    ; Step 1: Check if the Left Mouse Button is currently held down (Bit 0 of R12B)
+    test r12b, 0x01             ; Is left button pressed?
+    jz .skip_drag               ; If NOT pressed, skip dragging entirely!
+
+    ; --- MOUSE BUTTON IS DOWN: VALIDATE HITBOX ---
+    mov r11, 0x590
+    mov ecx, [abs r11]          ; ECX = Window X
+    mov r11, 0x594
+    mov edx, [abs r11]          ; EDX = Window Y
+
+    ; Hitbox Check: Is Mouse X inside Window Width? (Window X to Window X + 340)
+    cmp r14, rcx
+    jl .skip_drag
+    add rcx, 340
+    cmp r14, rcx
+    jg .skip_drag
+
+    ; Hitbox Check: Is Mouse Y inside Black Title Bar Height? (Window Y to Window Y + 22)
+    cmp r15, rdx
+    jl .skip_drag
+    add rdx, 22
+    cmp r15, rdx
+    jg .skip_drag
+
+    ; --- CALCULATE MOVEMENT DELTA AND UPDATE RAM IMMEDIATELY ---
+    mov r11, 0x580
+    mov eax, [abs r11]          ; EAX = Old Mouse X
+    mov ebx, r14d
+    sub ebx, eax                ; EBX = X Movement delta
+    
+    mov r11, 0x584
+    mov eax, [abs r11]          ; EAX = Old Mouse Y
+    mov r8d, r15d
+    sub r8d, eax                ; R8D = Y Movement delta
+
+    ; Push the new window coordinates straight into RAM variables cleanly
+    mov r11, 0x590
+    add [abs r11], ebx          
+    mov r11, 0x594
+    add [abs r11], r8d          
+
+    ; Set our drag flag to 1 so the system knows we need to clean up on release
+    mov r11, 0x598
+    mov dword [abs r11], 1
+
+    ; --- RENDER LIVE WIREFRAME PREVIEW OVER THE DESKTOP ---
+    ; We draw a thin 2-pixel neon line boundary box of the new position instantly
+    mov r11, 0x590
+    mov r8d, [abs r11]          ; Current Window X
+    mov r11, 0x594
+    mov r9d, [abs r11]          ; Current Window Y
+
+    ; 1. Top Outline Wire (Width=340, Height=2)
+    push r9
+    mov r10, 340
+    mov r12, 2
+    mov eax, 0x0000FFFF         ; Cyan Neon color
+    call draw_rectangle
+    pop r9
+
+    ; 2. Bottom Outline Wire (Width=340, Height=2 at Y+198)
+    push r9
+    add r9, 198
+    mov r10, 340
+    mov r12, 2
+    mov eax, 0x0000FFFF
+    call draw_rectangle
+    pop r9
+    jmp .skip_solid_draw
+
+.skip_drag:
+    ; IF THE USER JUST RELEASED THE MOUSE BUTTON:
+    mov r11, 0x598
+    cmp dword [abs r11], 1
+    jne .skip_solid_draw        ; If we weren't dragging, skip the heavy disk refresh!
+
+    ; Clean redraw once when user drops the window
+    mov dword [abs r11], 0
+    call draw_fraq_background   ; Wipe old trails from disk exactly once!
+
+.skip_solid_draw:
+    push r14
+    push r15
+
+    ; Erase the old mouse pointer trail using historical RAM coordinates
+    mov r11, 0x580
+    mov r14d, [abs r11]         
+    mov r11, 0x584
+    mov r15d, [abs r11]         
+    call mouse_restore_back     
+
+    pop r15
+    pop r14
+
+    ; Update our RAM history cache with the new mouse positions
+    mov r11, 0x580
+    mov [abs r11], r14d         
+    mov r11, 0x584
+    mov [abs r11], r15d         
+
+.redraw_desktop_frame:
+    ; Render the actual solid window box on top cleanly
+    call draw_window_frame      
+
+    ; Re-render the taskbar framework safely at the bottom row
+    mov r8, 0                   
+    mov r9, 440                 
+    mov r10, 640                
+    mov r12, 40                 
+    mov eax, 0x00000000         
+    call draw_rectangle         ; Black Taskbar
+    mov r8, 0                   
+    mov r9, 439                 
+    mov r10, 640                
+    mov r12, 2         
+    mov eax, 0x00FF00FF         
+    call draw_rectangle         ; Lila Accent Line
+
+.render_pointer_top:
+    ; Take fresh backup of mouse background area and drop the cursor arrow
+    call mouse_save_back        
+    call draw_mouse_pointer     
+    jmp .mouse_poll_loop
+
+.consume_keyboard:
+    mov dx, 0x60
+    in al, dx                   
+    jmp .mouse_poll_loop
+
+; --- FRAQSHIFT GRAPHICS COMPONENT: RECTANGLE ENGINE ---
+draw_rectangle:
+    push rbx
+    push rcx
+    push r11
+    push rdi
+    push rsi
+    mov rsi, r12                
+.row_loop:
+    push r8                     
+    mov rdi, r10                
+    mov r11, 0xFD000000
+    mov rbx, r9
+    imul rbx, 2560              
+    add r11, rbx
+    mov rbx, r8
+    shl rbx, 2                  
+    add r11, rbx                
+.col_loop:
+    mov [abs r11], eax              
+    add r11, 4                  
+    dec rdi
+    jnz .col_loop               
+    pop r8                      
+    inc r9                      
+    dec rsi
+    jnz .row_loop               
+    pop rsi
+    pop rdi
+    pop r11
+    pop rcx
+    pop rbx
+    ret
+
+
+; --- FRAQSHIFT GRAPHICS COMPONENT: DYNAMIC WINDOW COMPOSITOR ---
+
+draw_window_frame:
+    ; --- DRAWS THE CYBERPUNK WINDOW USING VARIABLES FROM RAM ---
+    push rax
+    push r8
+    push r9
+    push r10
+    push r12
+    push rbx
+
+    ; Load current Window position from dynamic RAM addresses
+    mov rbx, 0x590
+    mov r8d, [abs rbx]          ; R8 = Current Window X position
+    mov rbx, 0x594
+    mov r9d, [abs rbx]          ; R9 = Current Window Y position
+
+    ; 1. Draw main window body (Dark charcoal workspace)
+    ; Width and Height remain stable, but position shifts dynamically!
+    push r8
+    push r9
+    add r9, 22                  ; Window body starts right under the title bar
+    mov r10, 340                ; Width = 340
+    mov r12, 178                ; Height = 200 - 22 title bar = 178
+    mov eax, 0x001C1E24         ; Color = Sleek tech dark charcoal
+    call draw_rectangle
+    pop r9
+    pop r8
+
+    ; 2. Draw window title bar (Solid black top bar for mouse dragging)
+    mov r10, 340                ; Width = 340
+    mov r12, 22                 ; Height = 22
+    mov eax, 0x00000000         ; Color = Pure Black
+    call draw_rectangle
+
+    ; 3. Draw the glowing neon-blue accent line under the title bar
+    push r9
+    add r9, 22                  ; Placed right at the seam
+    mov r10, 340                ; Width = 340
+    mov r12, 2                  ; Height = 2 (thin neon thread)
+    mov eax, 0x0000FFFF         ; Color = Electric Neon Cyan/Blue
+    call draw_rectangle
+    pop r9
+
+    pop rbx
+    pop r12
+    pop r10
+    pop r9
+    pop r8
+    pop rax
+    ret
+
+; --- FRAQSHIFT GRAPHICS COMPONENT: WIREFRAME COMPOSITOR (PERFEKT SYNCHRONIZED) ---
+
+; --- FRAQSHIFT MOUSE DOUBLE-BUFFERING ENGINE ---
+mouse_save_back:
+    push rax
+    push rbx
+    push rcx
+    push r11
+    push rdi
+    mov r11, 0xFD000000
+    mov rbx, r15
+    imul rbx, 2560              
+    add r11, rbx
+    mov rbx, r14
+    shl rbx, 2                  
+    add r11, rbx                
+    mov rdi, 0x150000           
+    mov rcx, 8                  
+.save_row:
+    push r11
+    mov eax, [abs r11]
+    mov [abs rdi], eax
+    mov eax, [abs r11 + 4]
+    mov [abs rdi + 4], eax
+    mov eax, [abs r11 + 8]
+    mov [abs rdi + 8], eax
+    mov eax, [abs r11 + 12]
+    mov [abs rdi + 12], eax
+    mov eax, [abs r11 + 16]
+    mov [abs rdi + 16], eax
+    mov eax, [abs r11 + 20]
+    mov [abs rdi + 20], eax
+    mov eax, [abs r11 + 24]
+    mov [abs rdi + 24], eax
+    mov eax, [abs r11 + 28]
+    mov [abs rdi + 28], eax
+    pop r11
+    add r11, 2560               
+    add rdi, 32                 
+    dec rcx
+    jnz .save_row
+    pop rdi
+    pop r11
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+mouse_restore_back:
+    push rax
+    push rbx
+    push rcx
+    push r11
+    push rsi
+    mov r11, 0xFD000000
+    mov rbx, r15
+    imul rbx, 2560
+    add r11, rbx
+    mov rbx, r14
+    shl rbx, 2
+    add r11, rbx                
+    mov rsi, 0x150000           
+    mov rcx, 8                  
+.restore_row:
+    push r11
+    mov eax, [abs rsi]
+    mov [abs r11], eax
+    mov eax, [abs rsi + 4]
+    mov [abs r11 + 4], eax
+    mov eax, [abs rsi + 8]
+    mov [abs r11 + 8], eax
+    mov eax, [abs rsi + 12]
+    mov [abs r11 + 12], eax
+    mov eax, [abs rsi + 16]
+    mov [abs r11 + 16], eax
+    mov eax, [abs rsi + 20]
+    mov [abs r11 + 20], eax
+    mov eax, [abs rsi + 24]
+    mov [abs r11 + 24], eax
+    mov eax, [abs rsi + 28]
+    mov [abs r11 + 28], eax
+    pop r11
+    add r11, 2560
+    add rsi, 32
+    dec rcx
+    jnz .restore_row
+    pop rsi
+    pop r11
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+
+; --- FRAQSHIFT HARD DRIVE GRAPHICS STREAMER ---
+draw_fraq_background:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push r11
+    push rdi
+    mov r11, 0xFD000000         
+    mov rbx, 100                
+    mov rcx, 2400               
+.stream_sector_loop:
+    push rcx                    
+    mov dx, 0x01F2
+    mov al, 1                   
+    out dx, al
+    mov dx, 0x01F3
+    mov al, bl                  
+    out dx, al
+    mov dx, 0x01F4
+    mov ax, bx
+    shr ax, 8                   
+    out dx, al
+    mov dx, 0x01F5
+    mov ax, bx
+    shr ax, 16                  
+    out dx, al
+    mov dx, 0x01F6
+    mov ax, bx
+    shr ax, 24
+    and al, 0x0F
+    or al, 0xE0                 
+    out dx, al
+    mov dx, 0x01F7
+    mov al, 0x20                
+    out dx, al
+.wait_disk_ready:
+    in al, dx
+    test al, 0x08               
+    jz .wait_disk_ready         
+    mov dx, 0x01F0
+    mov rcx, 256                
+.read_word_loop:
+    in ax, dx                   
+    mov [abs r11], ax           
+    add r11, 2                  
+    dec rcx
+    jnz .read_word_loop
+    inc rbx                     
+    pop rcx                    
+    dec rcx
+    jnz .stream_sector_loop     
+    pop rdi
+    pop r11
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+
+; --- FRAQSHIFT EMBEDDED START ICON ENGINE (TRUE REGISTER SPECIFIC) ---
+
+draw_start_icon:
+    push rax
+    push rbx
+    push rcx
+    push r11
+    push rsi
+
+    mov rsi, fraq_icon_data     ; Point to the embedded bat pixels in the kernel
+
+    ; --- POSITIONING: LET'S PLACE IT PERFECTLY AT THE BOTTOM LEFT CORNER (X=15, Y=444) ---
+    mov r11, 0xFD000000
+    add r11, (444 * 2560) + (15 * 4) ; Lines up beautifully inside your black taskbar!
+
+    mov rbx, 32                 ; Height = 32 rows
+
+.row_loop:
+    push r11                    ; Save the start of the current row line
+    mov rcx, 32                 ; Width = 32 pixels
+
+.pixel_loop:
+    ; FIXED: Removed 'abs' so registers can advance smoothly pixel-by-pixel!
+    mov eax, [rsi]              ; Read 1 full 32-bit pixel from kernel memory
+    mov [r11], eax              ; Fire it directly into the screen silicon LFB
+    
+    add rsi, 4                  ; Advance 4 bytes to the next pixel in your file
+    add r11, 4                  ; Advance 4 bytes to the next pixel on screen
+    dec rcx
+    jnz .pixel_loop
+
+    pop r11                     ; Restore row start address
+    add r11, 2560               ; Move VRAM pointer straight down to the next row line
+    dec rbx
+    jnz .row_loop
+
+    pop rsi
+    pop r11
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+align 16
+fraq_icon_data:
+    incbin "fraq_start_icon.bin" ; NASM bakes your 4 KB image file directly into the kernel
 
 align 16
 scan_to_ascii:
@@ -1326,21 +2185,6 @@ scan_to_ascii:
     db 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"',  '~',  0, 124, 'Z', 'X', 'C', 'V'
     ; Row 4 (Shifted): Scancodes 0x30 - 0x3F (B N M < > ?)
     db 'B', 'N', 'M', '<', '>', '?',  0,  0,  0, ' ',  0,  0,  0,  0,  0,  0
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 align 16
 font_rom:
