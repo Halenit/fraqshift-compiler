@@ -1,6 +1,6 @@
 # Fraqshift Language Specification & Architecture (V6.0)
 
-This document serves as the official technical specification for the **Fraqshift systems programming language**. It describes the core execution model, memory layout, register management, and hardware instructions for developers building software or expanding the bootstrap compiler (`builder2.py`).
+This document serves as the official technical specification for the **Fraqshift systems programming language**. It describes the core execution model, memory layout, register management, and hardware instructions for developers building software or expanding the native self-hosted compiler pipeline.
 
 ---
 
@@ -19,7 +19,7 @@ When the kernel initializes via the 64-bit trampoline, the stack frame is anchor
 * `RBP` (Base Pointer): Anchors local variable allocations.
 * `RSP` (Stack Pointer): Tracks the active execution/calculation stack.
 * `RAX` & `RBX`: Reserved as high-speed primary hardware execution registers for arithmetic operations.
-* `RDI` & `RSI`: Reserved for hardware streaming and memory interface operations (e.g., VGA buffer manipulation and matrix streaming).
+* `RDI` & `RSI`: Reserved for hardware streaming and memory interface operations (e.g., VBE linear framebuffer manipulation and matrix streaming).
 
 ### Named Variable Isolation
 Named variables are declared with static initialization. Each 64-bit variable takes exactly **8 bytes** of space and is safely mapped below the base pointer:
@@ -100,17 +100,16 @@ Marks the boundary of a hardware loop. Safely restores the iterator index, incre
 Defines a static string stream. The compiler translates this directly into a series of `mov` instructions to optimize kisel-level execution.
 
 #### `sys.out`
-Streams the most recently declared string directly into the VGA text-buffer memory interface at address **`0xB8000`** with standard light-gray attributes.
+Streams character data directly into the custom VESA BIOS Extensions (VBE) high-color linear framebuffer interface starting at the base address **`0xFD000000`**.
 
 #### `sys.print_int`
-Pops a 64-bit integer from the stack, executes base-10 hardware division loops, converts the individual numbers to ASCII digits backwards into a safe stack array, and dumps the string to the VGA graphics terminal in **bright AI green**.
+Pops a 64-bit integer from the stack, executes base-10 hardware division loops, converts the individual numbers to ASCII digits backwards into a safe stack array, and dumps the resulting string straight into the graphical workspace canvas.
 
 #### `sys.print_char`
-Pops an ASCII byte value from the calculation stack, outputs a single character straight onto the active VGA text matrix cell tracked by the global pointer, and automatically advances the hardware graphics cursor forward.
-* **Assembly mapping:** `mov [rdi], al` -> `add rdi, 2`
+Pops an ASCII byte value from the calculation stack, processes the character bitmap layout through the embedded Font ROM matrix, and outputs the resulting high-contrast neon text pixels into the active fönster coordinates.
 
 #### `sys.clear`
-Flushes the entire 80x25 VGA text buffer screen layout by writing empty ASCII spaces (`0x20`) with clean attributes across all 2000 hardware cells, and anchors the global tracking pointer (`RDI`) back to the top-left memory node (`0xB8000`).
+Flushes the visible graphics display by streaming pure zeros or charcoal backdrop fill across the entire LFB canvas, resetting the active render node boundaries.
 
 ---
 
@@ -128,14 +127,13 @@ Halts the processor in a safe bare-metal lock loop until the user physically pre
 
 ### 3.6 Phase 8: Raw Pointer Dereferencing & Direct CPU Register Mapping
 
-Fas 8 eliminerar all runtime-overhead genom att tillåta källkoden att manipulera processorns fysiska hårdvaruregister och skriva direkt till godtyckliga adresser i datorns RAM-minne.
+Phase 8 eliminates all runtime software overhead by allowing the source code to manipulate the CPU's physical architectural registers and read/write directly to arbitrary addresses across the hardware RAM matrix.
 
 #### `sys.reg [register] = [integer]`
-Laddar ett rått 64-bitars heltal direkt in i ett av processorns inbyggda arkitekturregister (`RAX`, `RBX`, `RCX`, `RDX`, `RSI`, `RDI`), vilket förbi-går stacken för maximal kiselhastighet.
+Loads a raw 64-bit integer literal directly into one of the built-in CPU hardware registers (`RAX`, `RBX`, `RCX`, `RDX`, `RSI`, `RDI`), bypassing the calculation stack entirely to achieve maximum silicon execution velocities.
 * **Assembly mapping:** `mov reg, value`
 
 #### `*[pointer_variable] = [integer / register]`
-Avrefererar en minnespekare (*Pointer Dereferencing*). Hämtar den RAM-adress som finns lagrad i variabeln och skriver antingen ett fast värde eller innehållet från ett CPU-register direkt till den fysiska minnescellen.
-* **Assembly mapping (Immediate):** `mov rbx, [rbp - offset]` -> `mov rax, value` -> `mov [rbx], al`
-* **Assembly mapping (Register):** `mov rbx, [rbp - offset]` -> `mov [rbx], cl` (eller matchande 8-bitars lågregister)
-
+Dereferences a raw memory address (*Pointer Dereferencing*). Fetches the base RAM location stored inside the pointer variable and writes either a static immediate integer value or the active contents of a specified CPU hardware register directly into that physical silicon memory cell node.
+* **Assembly mapping (Immediate value):** `mov rbx, [rbp - offset]` -> `mov rax, value` -> `mov [rbx], al`
+* **Assembly mapping (Register contents):** `mov rbx, [rbp - offset]` -> `mov [rbx], cl` (or matching 8-bit low-register boundary) and write everything.
