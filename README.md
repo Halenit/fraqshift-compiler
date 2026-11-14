@@ -112,5 +112,5 @@ Fraqshift eliminates legacy bloat and compilation layers through a clean, multi-
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
-*The FRAQSHIFT Bat Mascot artwork is licensed under [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org) (see [LICENSE-MASCOT.txt](LICENSE-MASCOT.txt) for the full text).*
+*The FRAQSHIFT Bat Mascot artwork is licensed under [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org) (see [LICENSE-MASCOT.txt](LICENSE-MASCOT.md) for the full text).*
 
