@@ -54,13 +54,49 @@ start_bootloader:
     mov bx, 0xC400          ; 0xA000 + (18 * 512)
     int 0x13
     jc .disk_error
-    ; --- Read next 18 sectors (Cylinder 1, Head 1 -> Physical 0xE800) ---
+    ; --- Read next 12 sectors (Cylinder 1, Head 1, Sec 1-12 -> 0xE800 to 0x10000, NO 64KB CROSS!) ---
     mov ax, 0x0E80
     mov es, ax
     xor bx, bx
     mov ah, 0x02
-    mov al, 10              
+    mov al, 12              ; 12 * 512 = 0x1800 -> Ends at EXACT 0x10000!
     mov ch, 1
+    mov cl, 1
+    mov dh, 1
+    int 0x13
+    jc .disk_error
+
+    ; --- Read remaining 6 sectors of Track 1 Head 1 (Sec 13-18 -> Physical 0x10000) ---
+    mov ax, 0x1000
+    mov es, ax
+    xor bx, bx
+    mov ah, 0x02
+    mov al, 6               ; Starts cleanly at 0x10000 (inside new 64KB DMA page!)
+    mov ch, 1
+    mov cl, 13
+    mov dh, 1
+    int 0x13
+    jc .disk_error
+
+    ; --- Read next 16 sectors (Cylinder 2, Head 0 -> Physical 0x10C00, Total 39.5 KB) ---
+    mov ax, 0x10C0
+    mov es, ax
+    xor bx, bx
+    mov ah, 0x02
+    mov al, 18              ; Read ALL 18 sectors of Track 2, Head 0 (no 2-sector gap!)
+    mov ch, 2
+    mov cl, 1
+    mov dh, 0
+    int 0x13
+    jc .disk_error
+
+    ; --- Read next 18 sectors (Cylinder 2, Head 1 -> Physical 0x12C00, Total 52.5 KB) ---
+    mov ax, 0x1300
+    mov es, ax
+    xor bx, bx
+    mov ah, 0x02
+    mov al, 18             ; Starts cleanly at 0x13000 with zero gap!
+    mov ch, 2
     mov cl, 1
     mov dh, 1
     int 0x13
@@ -82,11 +118,12 @@ start_bootloader:
     rep stosd
 
     ; Populate Page Tables via ES (0x50000 base)
-    mov dword [es:0x0000], 0x51003 ; PML4[0] -> PDPT at 0x51000
-    mov dword [es:0x1000], 0x52003 ; PDPT[0] -> Low RAM PD at 0x52000
-    mov dword [es:0x1018], 0x53003 ; PDPT[3] -> Graphics PD at 0x53000
-    mov dword [es:0x2000], 0x0083  ; Identity map 0MB - 2MB
-    mov dword [es:0x2008], 0x00200083 ; Identity map 2MB - 4MB
+    mov dword [es:0x0000], 0x51007 ; PML4[0] -> PDPT at 0x51000 (Allow User traversal)
+    mov dword [es:0x1000], 0x52007 ; PDPT[0] -> Low RAM PD at 0x52000 (Allow User traversal)
+    mov dword [es:0x1018], 0x53003 ; PDPT[3] -> Graphics PD at 0x53000 (KERNEL ONLY! Ring 3 blocked!)
+    mov dword [es:0x2000], 0x0083  ; Identity map 0MB - 2MB (KERNEL ONLY! Ring 3 blocked!)
+    mov dword [es:0x2008], 0x00200083 ; Identity map 2MB - 4MB (KERNEL ONLY! Ring 3 blocked!)
+
 
     xor ax, ax
     mov es, ax              ; Restore ES to 0
@@ -151,6 +188,13 @@ stage2_kernel:
     mov fs, ax
     mov gs, ax
     mov ss, ax
+    mov ss, ax
+
+    ; --- PHASE 10.5: UPGRADE TO RING 3 + TSS SECURITY ARCHITECTURE ---
+    call init_security_gdt_tss
+    call init_fast_syscall
+    call init_nx_and_idt
+
 
     ; --- PHASE 11: 64-BIT HIGH-SPEED HARDWARE BRIDGES (AT 0x53000) ---
     mov rax, 0xE0000083         ; QEMU VESA Standard Address (0xE0000000 - 0xE01FFFFF)
@@ -165,18 +209,25 @@ stage2_kernel:
 
 
 
-
+; --- PHASE 11.5: PCI BUS SCANNER & INTEL E1000 NETWORK HARDWARE ---
+    call init_pci_e1000
 
     ; --- FLUSH CPU CACHE (TLB INVALIDATION) ---
     ; Force the MMU to immediately register the new hardware memory paths
     mov rax, cr3
     mov cr3, rax
 
+
+
 kernel_main:
     push rbp
     mov rbp, rsp
 
     call set_vbe_1024x768
+
+; --- PHASE 12: LAUNCH RING 3 SANDBOX & LIVE HTTP GET (SYSCALL 10) ---
+    call init_user_sandbox
+
 
 
     ; --- ACTIVATE TRUE 1080P VBE GRAPHICS MODE IMMEDIATELY ---
@@ -199,11 +250,1197 @@ kernel_main:
     ; --- BREAK OUT OF THE TERMINAL: JUMP STRAIGHT TO TRUE GUI ---
     jmp gui_desktop_loop        ; Boots directly into your new 1080p graphic ecosystem! [3.1]
 
+
         ; --- SYSTEM INITIALIZATION COMPLETE ---
     ; All infrastructure (Heap, Mouse, FS) is safely active under the hood! [3.1]
     ; We now fall directly into your stable terminal loop seamlessly.
 
+    
+
+; =========================================================================
+; FRAQSHIFT SECURITY CORE: 64-BIT RING 3 GDT, TSS & SYSCALL SANDBOX
+; =========================================================================
+init_security_gdt_tss:
+    ; 1. Clear the 104-byte TSS structure cleanly
+    lea rdi, [rel fraq_tss]
+    xor rax, rax
+    mov rcx, 13                 ; 13 * 8 = 104 bytes
+    rep stosq
+
+    ; 2. Set RSP0 (Kernel's protected stack when Ring 3 calls Kernel)
+    lea rdi, [rel fraq_tss]
+    mov qword [rdi + 4], 0x90000 ; Safe dedicated Kernel Ring 0 Stack
+    mov word [rdi + 102], 104    ; Disable I/O Permission Bitmap for Ring 3!
+
+    ; 3. Write the 64-bit TSS physical base address into GDT selector 0x18
+    mov rax, rdi
+    lea rbx, [rel gdt64_tss]
+    mov word [rbx + 2], ax       ; Base bits 0..15
+    shr rax, 16
+    mov byte [rbx + 4], al       ; Base bits 16..23
+    shr rax, 8
+    mov byte [rbx + 7], al       ; Base bits 24..31
+    shr rax, 8
+    mov dword [rbx + 8], eax     ; Base bits 32..63
+
+    ; 4. Load the new 64-bit Security GDT & activate Task Register (TR = 0x18)
+    lgdt [rel gdt64_ptr]
+    mov ax, 0x18                 ; Selector 0x18 = 64-bit TSS
+    ltr ax                       ; Load Task Register into CPU hardware!
+    ret
+
+align 16
+gdt64_start:
+    dq 0x0000000000000000        ; 0x00: Null Descriptor
+    dq 0x00209A0000000000        ; 0x08: Kernel Code (Ring 0, 64-bit)
+    dq 0x0000920000000000        ; 0x10: Kernel Data (Ring 0)
+gdt64_tss:
+    dw 103                       ; 0x18: TSS Limit (104 bytes - 1)
+    dw 0                         ; Base 0..15
+    db 0                         ; Base 16..23
+    db 0x89                      ; Type: 64-bit Available TSS (Present, Ring 0)
+    db 0x00                      ; Granularity
+    db 0                         ; Base 24..31
+    dd 0                         ; Base 32..63
+    dd 0                         ; Reserved
+    dq 0x0000F20000000000        ; 0x28: User Data   (STAR 0x20 + 8  = 0x28 | 3 = 0x2B)
+    dq 0x0020FA0000000000        ; 0x30: User Code   (STAR 0x20 + 16 = 0x30 | 3 = 0x33)
+gdt64_end:
+
+gdt64_ptr:
+    dw gdt64_end - gdt64_start - 1
+    dq gdt64_start
+
+align 16
+fraq_tss:
+    times 104 db 0               ; 104-byte Hardware Task State Segment
+
+; =========================================================================
+; FRAQSHIFT HIGH-SPEED 64-BIT SYSCALL ENGINE (MSR & DISPATCHER)
+; =========================================================================
+init_fast_syscall:
+    ; 1. Enable SCE (System Call Extensions, Bit 0) in IA32_EFER (0xC0000080)
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 1                   ; Set SCE bit
+    wrmsr
+
+    ; 2. Configure IA32_STAR (0xC0000081) with exact AMD64 segment math:
+    ; Bits 47:32 = 0x0008 (SYSCALL -> CS=0x08, SS=0x10)
+    ; Bits 63:48 = 0x0020 (SYSRET  -> SS=0x20+8=0x28|3, CS=0x20+16=0x30|3)
+    mov ecx, 0xC0000081
+    xor eax, eax
+    mov edx, 0x00200008
+    wrmsr
+
+    ; 3. Point IA32_LSTAR (0xC0000082) to our 64-bit Kernel Syscall Handler
+    mov ecx, 0xC0000082
+    lea rax, [rel fraq_syscall_entry]
+    mov rdx, rax
+    shr rdx, 32
+    wrmsr
+
+    ; 4. Mask Interrupt Flag (0x200) in IA32_SFMASK (0xC0000084) on syscall entry
+    mov ecx, 0xC0000084
+    mov eax, 0x00000200
+    xor edx, edx
+    wrmsr
+    ret
+
+; --- KERNEL SYSCALL GATEWAY (Called from Ring 3 apps via 'syscall') ---
+fraq_syscall_entry:
+    mov [rel user_rsp_scratch], rsp
+    mov rsp, 0x8F000
+
+    push rcx                    ; Save User return RIP
+    push r11                    ; Save User RFLAGS
+    push qword [rel user_rsp_scratch]
+
+    cmp rax, 0                  ; Syscall 0: sys_ping
+    je .sys_ping
+    cmp rax, 2                  ; Syscall 2: sys_get_mouse
+    je .sys_get_mouse
+    cmp rax, 10                 ; Syscall 10: sys_http_get (RDI = User Buffer Ptr in Ring 3)
+    je .sys_http_get
+    cmp rax, 99                 ; Syscall 99: Exit Ring 3 Sandbox verification
+    je .sys_exit_test
+
+    cmp rax, 99                 ; Syscall 99: Exit Ring 3 Sandbox verification
+    je .sys_exit_test
+
+    mov rax, -1
+    jmp .syscall_return
+
+.sys_ping:
+    mov rax, 0x1337             ; Proof-of-life return code from Ring 0 Kernel!
+    jmp .syscall_return
+
+.sys_get_mouse:
+    mov r11, 0x580
+    mov eax, [abs r11]
+    mov r11, 0x584
+    mov edx, [abs r11]
+    jmp .syscall_return
+
+.sys_http_get:
+    ; ZERO-TRUST SECURITY CHECK: Ensure Ring 3 destination buffer (RDI)
+    ; lies strictly inside the 4MB..6MB User Sandbox (0x400000..0x5FE000)!
+    cmp rdi, 0x400000
+    jb .syscall_bad_arg
+    cmp rdi, 0x5FE000
+    ja .syscall_bad_arg
+
+    ; Call Kernel's protected ARP + TCP/HTTP engine to fetch live web page into RDI!
+    call net_http_fetch_live    ; Returns bytes received in RAX (or -3 on timeout)
+    jmp .syscall_return
+
+.syscall_bad_arg:
+    mov rax, -2
+
+.sys_exit_test:
+    mov ax, 0x10                ; Restore Kernel Data Segments cleanly
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov rsp, [rel kernel_resume_rsp]
+    jmp [rel kernel_resume_rip]
+
+.syscall_return:
+    pop qword [rel user_rsp_scratch]
+    pop r11
+    pop rcx
+    mov rsp, [rel user_rsp_scratch]
+    o64 sysret
+
+user_rsp_scratch:
+    dq 0
+
+; =========================================================================
+; FRAQSHIFT RING 3 HARDWARE SANDBOX (USER PAGE TABLES & SYSRET LAUNCHER)
+; =========================================================================
+init_user_sandbox:
+    ; Map 2MB User Space Sandbox at 0x400000 - 0x5FFFFF inside Low RAM PD (0x52000)
+    ; Flag 0x87 = Present + Writable + User Mode Accessible + 2MB Huge Page
+    mov rdi, 0x52010
+    mov rax, 0x00400087
+    mov [rdi], rax
+
+
+    ; Flush TLB so CPU enforces Ring 0 (0..4MB) vs Ring 3 (4..6MB) immediately
+    mov rax, cr3
+    mov cr3, rax
+
+    ; Copy isolated Ring 3 test payload into User Space (0x400000)
+    lea rsi, [rel ring3_test_payload]
+    mov rdi, 0x400000
+    mov rcx, ring3_test_payload_end - ring3_test_payload
+    rep movsb
+
+    ; Execute live Ring 3 -> Ring 0 Syscall -> Ring 3 -> Kernel verification!
+    call launch_ring3_test
+    ret
+
+launch_ring3_test:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    lea rax, [rel .ring3_test_completed]
+    mov [rel kernel_resume_rip], rax
+    mov [rel kernel_resume_rsp], rsp
+
+    mov rcx, 0x400000           ; User RIP
+    mov r11, 0x002              ; User RFLAGS
+    mov rsp, 0x5F0000           ; User Stack inside 4MB-6MB Sandbox
+    o64 sysret                  ; Drop from Ring 0 -> Ring 3!
+
+.ring3_test_completed:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+ring3_test_payload:
+    mov rax, 0                  ; Syscall 0 = sys_ping
+    syscall                     ; Cross Ring 3 -> Ring 0!
+    mov rbx, 0x500000           ; Store 0x1337 inside User Sandbox RAM
+    mov [rbx], rax
+
+    ; --- LIVE INTERNET FETCH FROM ISOLATED RING 3 SANDBOX! ---
+    mov rdi, 0x510000           ; Validated Ring 3 buffer for incoming HTML/text
+    mov rax, 10                 ; Syscall 10 = sys_http_get (Fetches http://example.com)
+    syscall                     ; Ask Kernel to fetch web page safely!
+    mov rbx, 0x500008
+    mov [rbx], rax              ; Store downloaded byte count (or status) in User RAM!
+
+    mov rax, 99                 ; Syscall 99 = Hand control back to Kernel boot
+    syscall
+ring3_test_payload_end:
+
+
+kernel_resume_rip: dq 0
+kernel_resume_rsp: dq 0
+
+; =========================================================================
+; FRAQSHIFT HARDWARE DEFENSE: NX (NO-EXECUTE) BIT & 64-BIT EXCEPTION IDT
+; =========================================================================
+init_nx_and_idt:
+    ; 1. Enable NXE (No-Execute Enable, Bit 11) in IA32_EFER (0xC0000080)
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, (1 << 11)           ; Set Bit 11 (NXE) in CPU hardware!
+    wrmsr
+
+    ; 2. Populate first 32 CPU Exception Vectors (0..31) in 64-bit IDT (at 0x54000)
+    ; Placing the 4KB IDT at physical 0x54000 keeps it inside protected Kernel RAM!
+    mov rdi, 0x54000
+    xor rax, rax
+    mov rcx, 512                ; Clear 4096 bytes (256 entries * 16 bytes)
+    rep stosq
+
+    ; Install safe exception handlers for all 32 CPU hardware faults (0..31)
+    xor rcx, rcx                ; Vector index 0..31
+.install_idt_loop:
+    lea rax, [rel fraq_default_exception_handler]
+    cmp rcx, 13                 ; Vector 13 = #GP (General Protection Fault)
+    jne .check_pf_vec
+    lea rax, [rel fraq_security_fault_handler]
+    jmp .write_idt_gate
+.check_pf_vec:
+    cmp rcx, 14                 ; Vector 14 = #PF (Page Fault / Memory Wall Violation)
+    jne .write_idt_gate
+    lea rax, [rel fraq_security_fault_handler]
+
+.write_idt_gate:
+    ; Calculate IDT entry address: 0x54000 + (RCX * 16)
+    mov rdi, rcx
+    shl rdi, 4
+    add rdi, 0x54000
+
+    mov word [rdi], ax          ; Offset bits 0..15
+    mov word [rdi + 2], 0x0008  ; Kernel Code Selector (0x08)
+    mov byte [rdi + 4], 0       ; IST = 0
+    mov byte [rdi + 5], 0x8E    ; Type: 64-bit Interrupt Gate (Present, Ring 0)
+    shr rax, 16
+    mov word [rdi + 6], ax      ; Offset bits 16..31
+    shr rax, 16
+    mov dword [rdi + 8], eax    ; Offset bits 32..63
+    mov dword [rdi + 12], 0     ; Reserved
+
+    inc rcx
+    cmp rcx, 32
+    jl .install_idt_loop
+
+    ; 3. Load 64-bit IDT Register (IDTR) into CPU!
+    lidt [rel idt64_ptr]
+    ret
+; =========================================================================
+; FRAQSHIFT PCI BUS SCANNER & INTEL 82540EM (e1000) HARDWARE DRIVER
+; =========================================================================
+init_pci_e1000:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+
+    ; Scan Bus 0, Devices 0..31, Function 0 for Intel e1000 (0x8086:0x100E)
+    xor rbx, rbx                ; RBX = Device slot 0..31
+
+.pci_scan_loop:
+    ; Build PCI Configuration Address: (1 << 31) | (Bus 0 << 16) | (Dev << 11) | (Func 0 << 8) | Reg 0
+    mov eax, ebx
+    shl eax, 11
+    or eax, 0x80000000          ; Enable bit 31
+    mov dx, 0x0CF8
+    out dx, eax
+
+    mov dx, 0x0CFC
+    in eax, dx                  ; Read Vendor ID (low 16) + Device ID (high 16)
+
+    cmp eax, 0x100E8086         ; Intel 82540EM Gigabit Ethernet Controller?
+    je .e1000_found
+
+    inc rbx
+    cmp rbx, 32
+    jl .pci_scan_loop
+
+    ; Not found -> Store 0 at 0x5B8 as status
+    mov rdi, 0x5B8
+    mov qword [rdi], 0
+    jmp .pci_init_done
+
+.e1000_found:
+    ; 1. Enable PCI Memory Space (Bit 1) & Bus Mastering DMA (Bit 2) in PCI Command Reg (Offset 0x04)
+    mov eax, ebx
+    shl eax, 11
+    or eax, 0x80000004          ; Register offset 0x04 (Command/Status)
+    mov dx, 0x0CF8
+    out dx, eax
+
+    mov dx, 0x0CFC
+    in eax, dx
+    or eax, 0x00000006          ; Set Bit 1 (Memory Space) + Bit 2 (Bus Master)
+    out dx, eax
+
+    ; 2. Read BAR0 (Base Address Register 0 at Offset 0x10) for MMIO physical address
+    mov eax, ebx
+    shl eax, 11
+    or eax, 0x80000010          ; Register offset 0x10 (BAR0)
+    mov dx, 0x0CF8
+    out dx, eax
+
+    mov dx, 0x0CFC
+    in eax, dx
+    and eax, 0xFFFFFFF0         ; Mask out lower 4 flag bits -> Clean 32-bit physical BAR0!
+
+    ; If BIOS left BAR0 unassigned (0 or below 3GB), assign 0xFEB80000 directly!
+    cmp eax, 0xC0000000
+    jae .bar0_valid
+
+    mov eax, ebx
+    shl eax, 11
+    or eax, 0x80000010          ; Select BAR0 register again
+    mov dx, 0x0CF8
+    out dx, eax
+
+    mov dx, 0x0CFC
+    mov eax, 0xFEB80000         ; Assign clean, conflict-free 32-bit MMIO base address!
+    out dx, eax
+
+.bar0_valid:
+    mov rdi, 0x5B8
+    mov [rdi], rax              ; Save physical e1000 MMIO base address at 0x5B8!
+
+
+    ; 3. Dynamically map the 2MB MMIO region into Ring 0 Hardware PD (0x53000)
+    mov rcx, rax
+    mov rdx, 0xC0000000         ; Load full 64-bit unsigned 0xC0000000 (avoid 32-bit sign-extension!)
+    sub rcx, rdx                ; Clean positive offset from 3GB!
+    shr rcx, 21                 ; 2MB page index
+    shl rcx, 3                  ; Multiply by 8 bytes per PD entry
+    add rcx, 0x53000            ; Target entry inside Ring 0 Hardware Page Directory!
+
+
+    mov rdx, rax
+    and rdx, 0xFFE00000         ; Align physical base to 2MB boundary
+    or rdx, 0x00000093          ; Present (1) + Writable (2) + Cache Disable (0x10) + Huge Page (0x80) = Ring 0 ONLY!
+    mov [rcx], rdx
+
+    ; Flush TLB immediately so MMIO reads/writes hit silicon hardware directly!
+    mov rdx, cr3
+    mov cr3, rdx
+
+    ; 4. Read Hardware MAC Address from Intel e1000 RAL0 (0x5400) & RAH0 (0x5404)
+    ; RAX still holds physical BAR0 MMIO base (e.g., 0xFEBC0000)
+    mov edx, [rax + 0x5400]     ; RAL0: First 4 bytes of MAC address
+    mov rdi, 0x5B0
+    mov [rdi], edx              ; Store MAC bytes 0..3 at 0x5B0
+
+    mov edx, [rax + 0x5404]     ; RAH0: Last 2 bytes of MAC address (bits 0..15)
+    mov [rdi + 4], dx           ; Store MAC bytes 4..5 at 0x5B4
+
+    ; Mark Network Card Status = 1 (ONLINE & READY!) at 0x5B6
+    mov word [rdi + 6], 1
+
+    ; 5. Initialize TX/RX DMA Descriptor Rings & Wake Link (CTRL / RCTL / TCTL)
+    call e1000_init_rings
+
+.pci_init_done:
+
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+; =========================================================================
+; FRAQSHIFT INTEL E1000 DMA RING ENGINE & RAW ETHERNET PACKET TRANSMITTER
+; =========================================================================
+e1000_init_rings:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+
+    ; Fetch e1000 MMIO Base Address (BAR0) from 0x5B8
+    mov rdi, 0x5B8
+    mov rax, [rdi]
+    test rax, rax
+    jz .e1000_rings_done
+
+    ; 1. Wake up Intel e1000 Link: Full Duplex (0x01) + ASDE (0x20) + Set Link Up (0x40) = 0x61!
+    mov dword [rax + 0x0000], 0x00000061
+
+    ; 1. Set Link Up (SLU = Bit 6 -> 0x40) in Device Control Register (CTRL = 0x0000)
+    mov edx, [rax + 0x0000]
+    or edx, 0x00000040          ; Force Link Up!
+    mov [rax + 0x0000], edx
+
+    ; 2. Clear Multicast Table Array (MTA: 0x5200..0x53FC, 128 dwords)
+    xor rcx, rcx
+.clear_mta_loop:
+    mov dword [rax + 0x5200 + rcx * 4], 0
+    inc rcx
+    cmp rcx, 128
+    jl .clear_mta_loop
+
+    ; 3. Build 8-Entry Receive (RX) Descriptor Ring at 0x160000
+    ; Each descriptor is 16 bytes: [0..7] = Buffer Phys Addr, [8..15] = Status/Length
+    mov rdi, 0x160000
+    mov rbx, 0x161000           ; First 2KB RX packet buffer
+    xor rcx, rcx
+.setup_rx_ring:
+    mov [rdi], rbx              ; Buffer physical address
+    mov qword [rdi + 8], 0      ; Clear status & length
+    add rdi, 16
+    add rbx, 2048               ; Advance 2KB per buffer
+    inc rcx
+    cmp rcx, 8
+    jl .setup_rx_ring
+
+    ; Ensure Address Valid (Bit 31 = 0x80000000) is set in RAH0 (0x5404) so RX accepts packets!
+    mov edx, [rax + 0x5404]
+    or edx, 0x80000000
+    mov [rax + 0x5404], edx
+
+    ; Program e1000 RX Ring Registers:
+    mov dword [rax + 0x2800], 0x00160000 ; RDBAL: RX Descriptor Base Low
+    mov dword [rax + 0x2804], 0          ; RDBAH: RX Descriptor Base High
+    mov dword [rax + 0x2808], 128        ; RDLEN: 8 descriptors * 16 bytes = 128
+    mov dword [rax + 0x2810], 0          ; RDH:   RX Head = 0
+
+    ; Enable Receiver FIRST (EN=Bit 1 | UPE=Bit 3 | MPE=Bit 4 | BAM=Bit 15 | SECRC=Bit 26)
+    mov dword [rax + 0x0100], 0x0400801A
+
+    ; Set RX Tail (RDT = 7) AFTER enabling RCTL so hardware does not reset RDT to 0!
+    mov dword [rax + 0x2818], 7
    
+
+    ; 4. Build 8-Entry Transmit (TX) Descriptor Ring at 0x168000
+    ; Each descriptor is 16 bytes: [0..7] = Buffer Addr, [8..9] = Length, [11] = CMD, [12] = Status
+    mov rdi, 0x168000
+    mov rbx, 0x169000           ; First 2KB TX packet buffer
+    xor rcx, rcx
+.setup_tx_ring:
+    mov [rdi], rbx              ; TX Buffer physical address
+    mov qword [rdi + 8], 0      ; Clear length, cmd, status
+    add rdi, 16
+    add rbx, 2048               ; Advance 2KB per buffer
+    inc rcx
+    cmp rcx, 8
+    jl .setup_tx_ring
+
+    ; Program e1000 TX Ring Registers:
+    mov dword [rax + 0x3800], 0x00168000 ; TDBAL: TX Descriptor Base Low
+    mov dword [rax + 0x3804], 0          ; TDBAH: TX Descriptor Base High
+    mov dword [rax + 0x3808], 128        ; TDLEN: 8 descriptors * 16 bytes = 128
+    mov dword [rax + 0x3810], 0          ; TDH:   TX Head = 0
+    mov dword [rax + 0x3818], 0          ; TDT:   TX Tail = 0
+
+    ; Enable Transmitter (TCTL = 0x0400): EN (Bit 1) | PSP Pad Short Packets (Bit 3) | CT=0x0F | COLD=0x40
+    mov dword [rax + 0x0400], 0x010400FA
+        ; Set Inter-Packet Gap (TIPG = 0x0410) for IEEE 802.3 standard
+    mov dword [rax + 0x0410], 0x0060200A
+
+    ; 5. Broadcast DHCP Discover & obtain IPv4 Lease from Router!
+    call net_dhcp_discover
+
+.e1000_rings_done:
+
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+; --- TRANSMIT RAW ETHERNET FRAME VIA INTEL E1000 HARDWARE ---
+; Inputs: RSI = Pointer to Ethernet Frame in RAM, RCX = Frame Length (bytes, max 1514)
+e1000_send_packet:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+    push rsi
+
+    ; Security Guard: Enforce strict Ethernet MTU max length (1514 bytes)
+    cmp rcx, 1514
+    ja .send_abort
+    cmp rcx, 14
+    jb .send_abort
+
+    mov rdi, 0x5B8
+    mov rax, [rdi]              ; RAX = e1000 BAR0 MMIO Base
+    test rax, rax
+    jz .send_abort
+
+    ; Read current TX Tail index (TDT at offset 0x3818)
+    mov edx, [rax + 0x3818]
+    and edx, 7                  ; Wrap index 0..7
+
+    ; Calculate target TX Descriptor address: 0x168000 + (index * 16)
+    mov rbx, rdx
+    shl rbx, 4
+    add rbx, 0x168000
+
+    ; Copy frame payload into the descriptor's 2KB DMA buffer
+    mov rdi, [rbx]              ; Target DMA buffer address
+    push rcx
+    rep movsb                   ; Stream Ethernet frame into TX DMA buffer
+    pop rcx
+
+    ; Program TX Descriptor fields: Length, Command (EOP=1 | IFCS=2 | RS=8 -> 0x0B), Status=0
+    mov word [rbx + 8], cx      ; Packet length
+    mov byte [rbx + 10], 0      ; CSO
+    mov byte [rbx + 11], 0x0B   ; CMD: End Of Packet (1) + Insert FCS/CRC (2) + Report Status (8)
+    mov byte [rbx + 12], 0      ; Clear STA (Hardware sets Bit 0 DD when transmitted!)
+    mov byte [rbx + 13], 0
+    mov word [rbx + 14], 0
+
+    ; Advance TX Tail (TDT) to trigger immediate hardware DMA transmission!
+    inc edx
+    and edx, 7
+    mov [rax + 0x3818], edx
+
+.send_abort:
+    pop rsi
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+; =========================================================================
+; FRAQSHIFT NETWORK STACK: RX PACKET POLLER & DHCP IPv4 CLIENT
+; =========================================================================
+; Polls RX Descriptor Ring (0x160000) for incoming Ethernet frames.
+; Returns: RAX = Packet Length (0 if none), RSI = Pointer to RX Packet Buffer
+e1000_poll_rx:
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+
+    mov rdi, 0x5B8
+    mov rdx, [rdi]              ; RDX = e1000 BAR0 MMIO Base
+    test rdx, rdx
+    jz .rx_empty
+
+    ; Read our software RX tracker index from 0x5BC
+    mov rdi, 0x5BC
+    mov ecx, [rdi]
+    and ecx, 7                  ; Index 0..7
+
+    ; Calculate RX Descriptor address: 0x160000 + (index * 16)
+    mov rbx, rcx
+    shl rbx, 4
+    add rbx, 0x160000
+
+    ; Check Status byte [rbx + 12]: Bit 0 (DD = Descriptor Done) set by hardware?
+    mov al, byte [rbx + 12]
+    test al, 0x01
+    jz .rx_empty
+
+    ; Packet received! Extract Length [rbx + 8] & Buffer Address [rbx]
+    movzx rax, word [rbx + 8]
+    cmp rax, 1518               ; Security Guard: Clamp max Ethernet frame size!
+    ja .rx_recycle_only
+    mov rsi, [rbx]              ; RSI = Pointer to received packet data in RAM
+
+    ; Clear DD status bit and advance hardware RDT (0x2818) + software tracker
+    mov byte [rbx + 12], 0
+    mov [rdx + 0x2818], ecx     ; Give descriptor back to hardware tail!
+    inc ecx
+    and ecx, 7
+    mov [rdi], ecx              ; Save next RX index at 0x5BC
+    jmp .rx_done
+
+.rx_recycle_only:
+    mov byte [rbx + 12], 0
+    mov [rdx + 0x2818], ecx
+    inc ecx
+    and ecx, 7
+    mov [rdi], ecx
+
+.rx_empty:
+    xor rax, rax                ; Return 0 = No packet waiting
+
+.rx_done:
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+; --- BROADCAST DHCP DISCOVER & RECEIVE IPv4 LEASE (Stored at 0x5C0) ---
+net_dhcp_discover:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+
+    ; Reset RX tracker (0x5BC) & IPv4 Lease status (0x5C0..0x5CF)
+    mov rdi, 0x5BC
+    mov dword [rdi], 0
+    mov rdi, 0x5C0
+    mov qword [rdi], 0          ; 0x5C0 = Assigned IP, 0x5C4 = Gateway IP
+    mov qword [rdi + 8], 0      ; 0x5C8 = DNS IP, 0x5CC = DHCP Lease Status (0=Pending)
+
+    ; Build a complete 342-byte Ethernet + IPv4 + UDP + DHCP Discover frame at 0x170000
+    mov rdi, 0x170000
+    xor rax, rax
+    mov rcx, 64                 ; Clear 512 bytes cleanly
+    rep stosq
+
+    mov rdi, 0x170000
+
+    ; --- 1. ETHERNET HEADER (14 bytes: 0..13) ---
+    mov dword [rdi + 0], 0xFFFFFFFF ; Dst MAC: Broadcast FF:FF:FF:FF:FF:FF
+    mov word  [rdi + 4], 0xFFFF
+    mov rsi, 0x5B0
+    mov eax, [rsi]              ; Src MAC bytes 0..3
+    mov [rdi + 6], eax
+    mov ax, [rsi + 4]           ; Src MAC bytes 4..5
+    mov [rdi + 10], ax
+    mov word [rdi + 12], 0x0008 ; EtherType: 0x0800 (IPv4, big-endian)
+
+    ; --- 2. IPv4 HEADER (20 bytes: 14..33) ---
+    mov byte [rdi + 14], 0x45   ; Version 4, Header Length 5 (20 bytes)
+    mov byte [rdi + 15], 0x00   ; DSCP / ECN
+    mov word [rdi + 16], 0x4801 ; Total Length = 328 bytes (0x0148 big-endian)
+    mov word [rdi + 18], 0x3412 ; Identification
+    mov word [rdi + 20], 0x0000 ; Flags / Fragment Offset
+    mov byte [rdi + 22], 64     ; TTL = 64
+    mov byte [rdi + 23], 17     ; Protocol = 17 (UDP)
+    mov word [rdi + 24], 0x0000 ; Checksum (calculated below!)
+    mov dword [rdi + 26], 0x00000000 ; Src IP: 0.0.0.0
+    mov dword [rdi + 30], 0xFFFFFFFF ; Dst IP: 255.255.255.255
+
+    ; Compute exact 16-bit IPv4 Header Checksum over bytes 14..33
+    xor eax, eax
+    xor rcx, rcx
+.ip_csum_loop:
+    movzx edx, word [rdi + 14 + rcx * 2]
+    add eax, edx
+    inc rcx
+    cmp rcx, 10
+    jl .ip_csum_loop
+    mov edx, eax
+    shr edx, 16
+    and eax, 0xFFFF
+    add eax, edx
+    mov edx, eax
+    shr edx, 16
+    add eax, edx
+    not ax
+    mov [rdi + 24], ax          ; Store valid IPv4 Header Checksum!
+
+    ; --- 3. UDP HEADER (8 bytes: 34..41) ---
+    mov word [rdi + 34], 0x4400 ; Src Port: 68 (0x0044 big-endian)
+    mov word [rdi + 36], 0x4300 ; Dst Port: 67 (0x0043 big-endian)
+    mov word [rdi + 38], 0x3401 ; UDP Length: 308 bytes (0x0134 big-endian)
+    mov word [rdi + 40], 0x0000 ; UDP Checksum (0 = optional in IPv4)
+
+    ; --- 4. DHCP DISCOVER PAYLOAD (300 bytes: 42..341) ---
+    mov byte [rdi + 42], 1      ; OP = 1 (BOOTREQUEST)
+    mov byte [rdi + 43], 1      ; HTYPE = 1 (Ethernet)
+    mov byte [rdi + 44], 6      ; HLEN = 6 (MAC length)
+    mov byte [rdi + 45], 0      ; HOPS = 0
+    mov dword [rdi + 46], 0x78563412 ; Transaction ID (XID)
+    mov word [rdi + 52], 0x0080 ; Flags = 0x8000 (Broadcast reply, big-endian)
+
+    ; Client Hardware Address (CHADDR at offset 70 = 42 + 28)
+    mov rsi, 0x5B0
+    mov eax, [rsi]
+    mov [rdi + 70], eax
+    mov ax, [rsi + 4]
+    mov [rdi + 74], ax
+
+    ; DHCP Magic Cookie (offset 278 = 42 + 236): 99.130.83.99 (0x63825363)
+    mov dword [rdi + 278], 0x63538263
+
+    ; DHCP Options (offset 282):
+    mov byte [rdi + 282], 53    ; Option 53: DHCP Message Type
+    mov byte [rdi + 283], 1     ; Length = 1
+    mov byte [rdi + 284], 1     ; Type = 1 (DHCP DISCOVER)
+
+    mov byte [rdi + 285], 55    ; Option 55: Parameter Request List
+    mov byte [rdi + 286], 3     ; Length = 3
+    mov byte [rdi + 287], 1     ; Subnet Mask
+    mov byte [rdi + 288], 3     ; Router (Gateway)
+    mov byte [rdi + 289], 6     ; DNS Server
+
+    mov byte [rdi + 290], 255   ; Option 255: End of Options
+
+    ; Transmit the 342-byte DHCP Discover packet out onto the network!
+    mov rsi, 0x170000
+    mov rcx, 342
+    call e1000_send_packet
+
+    ; Poll RX ring briefly (up to 2,000,000 cycles) for QEMU Router's DHCP Offer!
+    mov rcx, 150000
+.wait_dhcp_offer:
+    push rcx
+    call e1000_poll_rx
+    pop rcx
+    test rax, rax
+    jnz .check_dhcp_reply
+    dec rcx
+    jnz .wait_dhcp_offer
+    jmp .dhcp_done
+
+.check_dhcp_reply:
+    ; Verify Ethernet Type == IPv4 (0x0008) & UDP Dst Port == 68 (0x4400)
+    cmp word [rsi + 12], 0x0008
+    jne .wait_dhcp_offer
+    cmp word [rsi + 36], 0x4400
+    jne .wait_dhcp_offer
+
+    ; Extract YIADDR (10.0.2.15) from DHCP Offer (offset 58)
+    mov eax, [rsi + 58]
+    mov rdi, 0x5C0
+    mov [rdi], eax                  ; Save Assigned IPv4 Address at 0x5C0!
+    mov dword [rdi + 4], 0x0202000A ; QEMU Gateway 10.0.2.2
+    mov dword [rdi + 8], 0x0302000A ; QEMU DNS 10.0.2.3
+    mov dword [rdi + 12], 1         ; DHCP Lease Status = 1!
+
+    ; --- SEND DHCP REQUEST (Option 53 = 3) SO QEMU ROUTER ACTIVATES 10.0.2.15! ---
+    mov rdi, 0x170000
+    mov byte [rdi + 284], 3         ; Change Option 53 from DISCOVER (1) -> REQUEST (3)!
+    mov byte [rdi + 285], 50        ; Option 50: Requested IP Address
+    mov byte [rdi + 286], 4         ; Length = 4
+    mov [rdi + 287], eax            ; 10.0.2.15
+    mov byte [rdi + 291], 255       ; End of Options
+
+    mov rsi, 0x170000
+    mov rcx, 342
+    call e1000_send_packet          ; Commit lease with QEMU virtual router!
+
+.dhcp_done:
+
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+
+
+
+
+; --- HARDWARE SECURITY VIOLATION HANDLER (#PF & #GP ISOLATION) ---
+; Triggered if a Ring 3 app tries to touch Kernel RAM, execute NX data, or use I/O ports!
+fraq_security_fault_handler:
+    ; Check CS on interrupt stack frame (RSP+8 if no error code, RSP+16 with error code)
+    ; #GP (13) and #PF (14) always push a 64-bit error code at [RSP]!
+    mov rax, [rsp + 16]         ; Fetch saved User CS from hardware interrupt frame
+    test rax, 0x03              ; Was the fault caused by Ring 3 (CPL = 3)?
+    jz fraq_default_exception_handler ; Jump straight to global halt handler!
+
+
+    ; RING 3 APP CONTAINED! Terminate the rogue app and return cleanly to Kernel!
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov rsp, [rel kernel_resume_rsp]
+    jmp [rel kernel_resume_rip]
+
+fraq_default_exception_handler:
+.kernel_panic_halt:
+    cli
+    hlt
+    jmp .kernel_panic_halt
+
+align 16
+idt64_ptr:
+    dw 4095                     ; IDT Limit (256 * 16 bytes - 1)
+    dq 0x54000                  ; IDT Base Address in protected Kernel RAM
+
+; =========================================================================
+; FRAQSHIFT INTERNET ENGINE: ARP RESOLVER & TCP/HTTP GET CLIENT (PORT 80)
+; =========================================================================
+; Resolves Gateway MAC (10.0.2.2) via ARP and stores it at 0x5D0 (6 bytes)
+net_arp_resolve_gateway:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+
+    ; Build 42-byte ARP Request frame at 0x170400
+    mov rdi, 0x170400
+    xor rax, rax
+    mov rcx, 8
+    rep stosq
+
+    mov rdi, 0x170400
+
+    ; Ethernet Header (14 bytes)
+    mov dword [rdi + 0], 0xFFFFFFFF ; Broadcast Dst MAC
+    mov word  [rdi + 4], 0xFFFF
+    mov rsi, 0x5B0
+    mov eax, [rsi]              ; Our Src MAC 0..3
+    mov [rdi + 6], eax
+    mov ax, [rsi + 4]           ; Our Src MAC 4..5
+    mov [rdi + 10], ax
+    mov word [rdi + 12], 0x0608 ; EtherType: 0x0806 (ARP, big-endian)
+
+    ; ARP Payload (28 bytes: offsets 14..41)
+    mov word [rdi + 14], 0x0100 ; HTYPE: Ethernet (1)
+    mov word [rdi + 16], 0x0008 ; PTYPE: IPv4 (0x0800)
+    mov byte [rdi + 18], 6      ; HLEN: 6
+    mov byte [rdi + 19], 4      ; PLEN: 4
+    mov word [rdi + 20], 0x0100 ; OPER: ARP Request (1)
+
+    ; Sender MAC (22..27) & Sender IP (28..31 = 10.0.2.15)
+    mov eax, [rsi]
+    mov [rdi + 22], eax
+    mov ax, [rsi + 4]
+    mov [rdi + 26], ax
+    mov dword [rdi + 28], 0x0F02000A ; 10.0.2.15
+
+    ; Target MAC (32..37 = 0) & Target IP (38..41 = 10.0.2.2 QEMU Gateway)
+    mov dword [rdi + 38], 0x0202000A ; 10.0.2.2
+
+    ; Send 42-byte ARP Request!
+    mov rsi, 0x170400
+    mov rcx, 42
+    call e1000_send_packet
+
+    ; Wait up to 2,000,000 polls for ARP Reply (OPER == 2)
+    mov rcx, 150000
+.wait_arp_reply:
+    push rcx
+    call e1000_poll_rx
+    pop rcx
+    test rax, rax
+    jnz .check_arp_packet
+    dec rcx
+    jnz .wait_arp_reply
+
+    ; Fallback to standard QEMU Slirp Gateway MAC (52:55:0a:00:02:02) if timeout
+    mov rdi, 0x5D0
+    mov dword [rdi], 0x000A5552
+    mov word  [rdi + 4], 0x0202
+    jmp .arp_done
+
+.check_arp_packet:
+    cmp word [rsi + 12], 0x0608 ; EtherType == ARP?
+    jne .wait_arp_reply
+    cmp word [rsi + 20], 0x0200 ; OPER == ARP Reply (2)?
+    jne .wait_arp_reply
+
+    ; Extract Gateway's 6-byte MAC from Sender MAC (offset 22) -> Store at 0x5D0!
+    mov eax, [rsi + 22]
+    mov rdi, 0x5D0
+    mov [rdi], eax
+    mov ax, [rsi + 26]
+    mov [rdi + 4], ax
+
+.arp_done:
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+; --- FETCH LIVE WEB PAGE OVER TCP/HTTP INTO USER BUFFER (RDI) ---
+; Inputs: RDI = Validated Ring 3 User Buffer (max 4096 bytes)
+; Returns: RAX = Number of bytes written to Ring 3 buffer
+net_http_fetch_live:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r12
+    push r13
+
+    mov r12, rdi                ; R12 = Safe Ring 3 output buffer pointer
+    xor r13, r13                ; R13 = Total HTML/text bytes collected
+
+    ; 1. Resolve Gateway MAC first
+    call net_arp_resolve_gateway
+
+    ; 2. Send TCP SYN Packet to example.com (93.184.216.34 = 0x22D8B85D, Port 80)
+    ; Local Src Port = 49152 (0xC000), Initial SEQ = 0x10000000
+    mov edx, 0x02               ; TCP Flags = SYN (0x02)
+    mov r8d, 0x00000010         ; SEQ = 0x10000000 (big-endian)
+    xor r9d, r9d                ; ACK = 0
+    xor rsi, rsi                ; No HTTP payload yet
+    xor rcx, rcx
+    call net_send_tcp_packet
+
+    ; 3. Wait for Server's TCP SYN-ACK (Flags & 0x12 == 0x12)
+    mov rcx, 1500000
+.wait_syn_ack:
+    push rcx
+    call e1000_poll_rx
+    pop rcx
+    test rax, rax
+    jnz .inspect_syn_ack
+    dec rcx
+    jnz .wait_syn_ack
+    mov rax, -3                 ; Timeout error
+    jmp .http_done
+
+.inspect_syn_ack:
+    cmp word [rsi + 12], 0x0008 ; IPv4?
+    jne .wait_syn_ack
+    cmp byte [rsi + 23], 6      ; Protocol == TCP (6)?
+    jne .wait_syn_ack
+    cmp word [rsi + 36], 0x00C0 ; Dst Port == 49152 (0xC000 big-endian)?
+    jne .wait_syn_ack
+    mov al, byte [rsi + 47]     ; TCP Flags byte (offset 14 + 20 + 13 = 47)
+    and al, 0x12                ; SYN (0x02) + ACK (0x10)
+    cmp al, 0x12
+    jne .wait_syn_ack
+
+    ; Extract Server's SEQ (offset 38) in host order, add 1, convert back to big-endian for ACK!
+    mov eax, [rsi + 38]
+    bswap eax
+    inc eax
+    bswap eax
+    mov r9d, eax                ; R9D = Server SEQ + 1 (our ACK number!)
+
+    ; 4. Complete 3-Way Handshake (ACK) & Stream HTTP/1.0 GET Request!
+    mov edx, 0x18               ; TCP Flags = PSH (0x08) + ACK (0x10)
+    mov r8d, 0x01000010         ; Our SEQ = 0x10000001 (big-endian)
+    lea rsi, [rel http_get_request]
+    mov rcx, http_get_request_end - http_get_request
+    call net_send_tcp_packet
+
+    ; 5. Collect incoming HTTP response packets safely into Ring 3 buffer (max 4096 bytes!)
+    mov rcx, 1500000
+.recv_http_loop:
+    push rcx
+    call e1000_poll_rx
+    pop rcx
+    test rax, rax
+    jnz .process_http_chunk
+    dec rcx
+    jnz .recv_http_loop
+    jmp .http_finalize
+
+.process_http_chunk:
+    cmp word [rsi + 12], 0x0008 ; IPv4?
+    jne .recv_http_loop
+    cmp byte [rsi + 23], 6      ; TCP?
+    jne .recv_http_loop
+    cmp word [rsi + 36], 0x00C0 ; Dst Port == 49152?
+    jne .recv_http_loop
+
+    ; Calculate TCP payload length: IP Total Len (offset 16, big-endian) - 40 bytes (IP+TCP headers)
+    movzx edx, word [rsi + 16]
+    xchg dl, dh
+    sub edx, 40
+    cmp edx, 0
+    jle .check_tcp_fin
+
+    ; Copy payload bytes safely into Ring 3 buffer (enforce strict 4096-byte cap!)
+    add rsi, 54                 ; Start of HTTP payload (14 Eth + 20 IP + 20 TCP)
+.copy_http_bytes:
+    cmp r13, 4095               ; Hard Ring 3 buffer limit!
+    jge .http_finalize
+    mov al, byte [rsi]
+    mov [r12 + r13], al         ; Write byte into Ring 3 sandbox buffer
+    inc rsi
+    inc r13
+    dec edx
+    jnz .copy_http_bytes
+
+.check_tcp_fin:
+    ; Null-terminate Ring 3 string and return!
+    mov byte [r12 + r13], 0
+    mov rax, r13
+    jmp .http_done
+
+.http_finalize:
+    mov byte [r12 + r13], 0
+    mov rax, r13
+
+.http_done:
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+; --- HELPER: BUILD & TRANSMIT ETHERNET + IPv4 + TCP PACKET ---
+; Inputs: EDX = TCP Flags, R8D = SEQ (BE), R9D = ACK (BE), RSI = Payload Ptr, RCX = Payload Len
+net_send_tcp_packet:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r10
+    push r11
+
+    mov r10, rsi                ; Save payload pointer
+    mov r11, rcx                ; Save payload length
+
+    mov rdi, 0x170800
+    xor rax, rax
+    mov rcx, 32
+    rep stosq
+
+    mov rdi, 0x170800
+
+    ; 1. Ethernet Header (Gateway Dst MAC from 0x5D0, Our Src MAC from 0x5B0)
+    mov rsi, 0x5D0
+    mov eax, [rsi]
+    mov [rdi + 0], eax
+    mov ax, [rsi + 4]
+    mov [rdi + 4], ax
+    mov rsi, 0x5B0
+    mov eax, [rsi]
+    mov [rdi + 6], eax
+    mov ax, [rsi + 4]
+    mov [rdi + 10], ax
+    mov word [rdi + 12], 0x0008 ; IPv4
+
+    ; 2. IPv4 Header (Total Length = 40 + Payload Len)
+    mov byte [rdi + 14], 0x45
+    mov eax, 40
+    add eax, r11d
+    xchg al, ah
+    mov [rdi + 16], ax          ; IP Total Length (big-endian)
+    mov word [rdi + 18], 0x1122
+    mov byte [rdi + 22], 64     ; TTL
+    mov byte [rdi + 23], 6      ; Protocol = 6 (TCP)
+    mov dword [rdi + 26], 0x0F02000A ; Src IP: 10.0.2.15
+    mov dword [rdi + 30], 0x273EBE92 ; Dst IP: 146.190.62.39 (httpforever.com, Port 80!)
+
+
+    ; IPv4 Header Checksum
+    xor eax, eax
+    xor rcx, rcx
+.tcp_ip_csum:
+    movzx ebx, word [rdi + 14 + rcx * 2]
+    add eax, ebx
+    inc rcx
+    cmp rcx, 10
+    jl .tcp_ip_csum
+    mov ebx, eax
+    shr ebx, 16
+    and eax, 0xFFFF
+    add eax, ebx
+    not ax
+    mov [rdi + 24], ax
+
+    ; 3. TCP Header (20 bytes: offsets 34..53)
+    mov word [rdi + 34], 0x00C0 ; Src Port: 49152 (0xC000 BE)
+    mov word [rdi + 36], 0x5000 ; Dst Port: 80 (0x0050 BE)
+    mov [rdi + 38], r8d         ; SEQ (BE)
+    mov [rdi + 42], r9d         ; ACK (BE)
+    mov byte [rdi + 46], 0x50   ; Data Offset: 5 dwords (20 bytes)
+    mov byte [rdi + 47], dl     ; TCP Flags (SYN / ACK / PSH+ACK)
+    mov word [rdi + 48], 0x0020 ; Window Size: 8192 (0x2000 BE)
+
+    ; Copy HTTP Payload if any
+    test r11, r11
+    jz .compute_tcp_csum
+    mov rsi, r10
+    lea rdi, [rdi + 54]
+    mov rcx, r11
+    rep movsb
+    mov rdi, 0x170800
+
+.compute_tcp_csum:
+    ; Compute TCP Checksum over Pseudo-Header (12 bytes) + TCP Header + Payload
+    xor eax, eax
+    ; Pseudo-header: Src IP (2 words) + Dst IP (2 words) + Protocol 6 (0x0600 BE) + TCP Length
+    movzx ebx, word [rdi + 26]
+    add eax, ebx
+    movzx ebx, word [rdi + 28]
+    add eax, ebx
+    movzx ebx, word [rdi + 30]
+    add eax, ebx
+    movzx ebx, word [rdi + 32]
+    add eax, ebx
+    add eax, 0x0600             ; TCP Protocol = 6 in network byte order
+
+    mov ebx, 20
+    add ebx, r11d
+    xchg bl, bh
+    add eax, ebx                ; TCP Segment Length in network byte order
+
+    ; Sum TCP Header + Payload words (padded with 0 if odd length)
+    mov ecx, 20
+    add ecx, r11d
+    lea rsi, [rdi + 34]
+.tcp_seg_sum:
+    cmp ecx, 1
+    je .tcp_odd_byte
+    jb .tcp_fold_csum
+    movzx ebx, word [rsi]
+    add eax, ebx
+    add rsi, 2
+    sub ecx, 2
+    jmp .tcp_seg_sum
+.tcp_odd_byte:
+    movzx ebx, byte [rsi]
+    add eax, ebx
+.tcp_fold_csum:
+    mov ebx, eax
+    shr ebx, 16
+    and eax, 0xFFFF
+    add eax, ebx
+    mov ebx, eax
+    shr ebx, 16
+    and eax, 0xFFFF
+    add eax, ebx
+    not ax
+    mov [rdi + 50], ax          ; Store valid 16-bit TCP Checksum!
+
+
+    ; Transmit complete Ethernet + IPv4 + TCP frame (54 + Payload Len)!
+    mov rsi, 0x170800
+    mov rcx, 54
+    add rcx, r11
+    call e1000_send_packet
+
+    pop r11
+    pop r10
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+http_get_request:
+    db "GET / HTTP/1.0", 13, 10
+    db "Host: httpforever.com", 13, 10
+    db "User-Agent: FraqshiftOS/1.0", 13, 10
+    db "Connection: close", 13, 10, 13, 10
+http_get_request_end:
+
+
+legacy_terminal_fallback: 
 .fraq_malloc_test_fail:
 
     ; --- STEP 1: PREPARE 'F' DIRECTLY IN CPU TRANSISTORS ---
@@ -1966,6 +3203,45 @@ gui_desktop_loop:
     mov [abs r11], r15d         
 
 .redraw_desktop_frame:
+; --- 4-STAGE NETWORK & SYSCALL 10 DIAGNOSTIC LED (Top-Right Taskbar) ---
+    mov r11, 0x500008           ; 1. Check if Ring 3 Syscall 10 downloaded HTML bytes (> 0)
+    mov rax, [abs r11]
+    cmp rax, 0
+    jg .led_online_green
+
+    mov r11, 0x5CC              ; 2. Check if DHCP Lease (10.0.2.15) succeeded (== 1)
+    mov eax, [abs r11]
+    cmp eax, 1
+    je .led_dhcp_cyan
+
+    mov r11, 0x5B6              ; 3. Check if Intel e1000 PCI card is ONLINE (== 1)
+    movzx eax, word [abs r11]
+    cmp eax, 1
+    je .led_pci_orange
+
+    mov eax, 0x00FF3344         ; RED: e1000 PCI card not detected
+    jmp .draw_net_led
+
+.led_pci_orange:
+    mov eax, 0x00FF9900         ; ORANGE: PCI card ONLINE, waiting for DHCP
+    jmp .draw_net_led
+
+.led_dhcp_cyan:
+    mov eax, 0x0000CCFF         ; CYAN/BLUE: DHCP Lease ACTIVE (10.0.2.15), TCP pending
+    jmp .draw_net_led
+
+.led_online_green:
+    mov eax, 0x0000FF66         ; NEON-GREEN: 100% INTERNET! Web page fetched into Ring 3!
+
+.draw_net_led:
+    mov r8, 960
+    mov r9, 12
+    mov r10, 48
+    mov r12, 18
+    call draw_rectangle
+.net_status_done:
+
+
     ; Render the solid app window frame safely
     call draw_window_frame      
     call draw_window_text       ; Render live typed text inside the window workspace
@@ -2025,19 +3301,34 @@ gui_desktop_loop:
     cmp al, 0                   ; Ignore non-printable keys (Shift, Ctrl, etc.)
     jz .finish_keyboard_poll
 
-    ; 3. Store ASCII character in RAM text buffer (0x180000)
+        ; 3. Store ASCII character in RAM text buffer (0x180000)
     mov rbx, 0x180000
     mov r11, 0x5A8
     mov ecx, [abs r11]          ; Current character count
 
-    cmp ecx, 255                ; Prevent buffer overflow
+    cmp ecx, 255
     jge .finish_keyboard_poll
 
-    mov [rbx + rcx], al         ; Save character directly to 64-bit RAM buffer (0x180000)
-    inc ecx                     ; Increment count
-    mov [abs r11], ecx          ; Store updated count in RAM
+    mov [rbx + rcx], al         ; Save character to buffer
 
-    call draw_window_text       ; Draw the new letter on screen IMMEDIATELY!
+    ; --- DRAW REAL CHARACTER IMMEDIATELY (SAVE RCX & R11!) ---
+    push rcx
+    push r11
+
+    mov r8, rcx
+    imul r8, 10                 ; Move 10 pixels right per letter!
+    add r8, 12                  ; Left padding inside window
+    mov r9, 25                  ; Vertical offset inside black body (below blue line!)
+    call draw_char_in_window
+
+    pop r11
+    pop rcx
+
+    inc ecx                     ; Increase counter: 0 -> 1 -> 2 -> 3...
+    mov [abs r11], ecx          ; Save new count in RAM!
+
+
+
 
 
 .finish_keyboard_poll:
@@ -2168,35 +3459,34 @@ draw_char_in_window:
     sub al, 32
 
 .check_glyph_bounds:
-    sub al, 32
-    movzx rax, al
-    shl rax, 3                  ; 8 bytes per character in built-in 8x8 font
-    lea rsi, [rel win_font_8x8]
-    add rsi, rax
+    ; 2. Draw directly inside the black window body at guaranteed coordinates!
+    mov rbx, 200                ; Guaranteed X inside the black window
+    add rbx, r8                 ; + Character horizontal offset (0, 10, 20...)
 
-    ; Calculate absolute VRAM screen pointer (0xE0000000, Pitch = 4096)
-    mov rbx, 0x590
-    mov r11d, [abs rbx]         ; Window X
-    add r11, r8                 ; + Relative X
+    mov rdx, 180                ; Guaranteed Y below the blue title line
+    add rdx, r9                 ; + Line vertical offset
 
-    mov rbx, 0x594
-    mov edx, [abs rbx]          ; Window Y
-    add rdx, 28                 ; + Title bar height & border
-    add rdx, r9                 ; + Relative Y
-
-    mov rbx, r11
     mov r11, 0xE0000000         ; Active 1024x768 LFB address
     imul rdx, 4096              ; Row pitch = 4096 bytes
     add r11, rdx
     shl rbx, 2                  ; X * 4 bytes per pixel
     add r11, rbx
 
+    sub al, 32
+    movzx rax, al
+    shl rax, 3                  ; 8 bytes per character in built-in 8x8 font
+    lea rsi, [rel font_rom]     ; Use existing font_rom symbol so NASM compiles cleanly!
+
+
+
+    add rsi, rax
+
     ; Draw crisp 8x8 neon cyan-green glyph (scaled 2x vertically for 8x16 look)
     mov rcx, 8
 
 .win_glyph_row:
     push r11
-    mov bl, byte [rsi]
+    mov bl, byte [rsi]          ; Load actual 8-bit character row from win_font_8x8!
     mov rdx, 8
 
 .win_glyph_col:
@@ -2223,72 +3513,6 @@ draw_char_in_window:
     pop rax
     ret
 
-; --- BUILT-IN 8x8 CYBERPUNK BITMAP FONT (ASCII 32..95) ---
-win_font_8x8:
-    db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 ; 32 ' '
-    db 0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00 ; 33 '!'
-    db 0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00 ; 34 '"'
-    db 0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00 ; 35 '#'
-    db 0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00 ; 36 '$'
-    db 0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00 ; 37 '%'
-    db 0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00 ; 38 '&'
-    db 0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00 ; 39 '''
-    db 0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00 ; 40 '('
-    db 0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00 ; 41 ')'
-    db 0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00 ; 42 '*'
-    db 0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00 ; 43 '+'
-    db 0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06 ; 44 ','
-    db 0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00 ; 45 '-'
-    db 0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00 ; 46 '.'
-    db 0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00 ; 47 '/'
-    db 0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00 ; 48 '0'
-    db 0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00 ; 49 '1'
-    db 0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00 ; 50 '2'
-    db 0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00 ; 51 '3'
-    db 0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00 ; 52 '4'
-    db 0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00 ; 53 '5'
-    db 0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00 ; 54 '6'
-    db 0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00 ; 55 '7'
-    db 0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00 ; 56 '8'
-    db 0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00 ; 57 '9'
-    db 0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00 ; 58 ':'
-    db 0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06 ; 59 ';'
-    db 0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00 ; 60 '<'
-    db 0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00 ; 61 '='
-    db 0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00 ; 62 '>'
-    db 0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00 ; 63 '?'
-    db 0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00 ; 64 '@'
-    db 0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00 ; 65 'A'
-    db 0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00 ; 66 'B'
-    db 0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00 ; 67 'C'
-    db 0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00 ; 68 'D'
-    db 0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00 ; 69 'E'
-    db 0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00 ; 70 'F'
-    db 0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00 ; 71 'G'
-    db 0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00 ; 72 'H'
-    db 0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00 ; 73 'I'
-    db 0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00 ; 74 'J'
-    db 0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00 ; 75 'K'
-    db 0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00 ; 76 'L'
-    db 0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00 ; 77 'M'
-    db 0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00 ; 78 'N'
-    db 0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00 ; 79 'O'
-    db 0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00 ; 80 'P'
-    db 0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00 ; 81 'Q'
-    db 0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00 ; 82 'R'
-    db 0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00 ; 83 'S'
-    db 0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00 ; 84 'T'
-    db 0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00 ; 85 'U'
-    db 0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00 ; 86 'V'
-    db 0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00 ; 87 'W'
-    db 0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00 ; 88 'X'
-    db 0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00 ; 89 'Y'
-    db 0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00 ; 90 'Z'
-    db 0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00 ; 91 '['
-    db 0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00 ; 92 '\'
-    db 0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00 ; 93 ']'
-    db 0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00 ; 94 '^'
-    db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF ; 95 '_'
 
 ; --- BOCHS VBE HARDWARE DRIVER: TRUE 1024x768 @ 32-BIT ---
 set_vbe_1024x768:
@@ -2749,5 +3973,5 @@ font_rom:
 
 
 
-section .pad
-times 32768-($-$$) db 0
+
+times 45056-($-$$) db 0

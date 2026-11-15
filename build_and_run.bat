@@ -29,10 +29,15 @@ if %errorlevel% neq 0 (
     goto menu
 )
 
+:: Pad floppy image to exact 1.44 MB (1,474,560 bytes) so BIOS int 13h never hits EOF!
+powershell -NoProfile -Command "$b=[IO.File]::ReadAllBytes('fraqshift_kernel.bin'); if($b.Length -lt 1474560){$p=New-Object byte[] 1474560; [Array]::Copy($b,$p,$b.Length); [IO.File]::WriteAllBytes('fraqshift_kernel.bin',$p)}"
+
+
 echo.
 echo [3/3] Launching Fraqshift OS inside QEMU Bare-Metal Sandbox...
 echo ---------------------------------------------------------
-"C:\Program Files\qemu\qemu-system-x86_64.exe" -vga std -boot order=a -drive format=raw,file=fraqshift_kernel.bin,if=floppy -drive format=raw,file=fraq_hdd.img,if=ide
+"C:\Program Files\qemu\qemu-system-x86_64.exe" -vga std -boot order=a -drive format=raw,file=fraqshift_kernel.bin,if=floppy -drive format=raw,file=fraq_hdd.img,if=ide -netdev user,id=net0 -device e1000,netdev=net0 -object filter-dump,id=f1,netdev=net0,file=net.pcap
+
 
 
 
