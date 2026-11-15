@@ -32,7 +32,10 @@ if %errorlevel% neq 0 (
 echo.
 echo [3/3] Launching Fraqshift OS inside QEMU Bare-Metal Sandbox...
 echo ---------------------------------------------------------
-"C:\Program Files\qemu\qemu-system-x86_64.exe" -boot order=a -drive format=raw,file=fraqshift_kernel.bin,if=floppy -drive format=raw,file=fraq_hdd.img,if=ide
+"C:\Program Files\qemu\qemu-system-x86_64.exe" -vga std -boot order=a -drive format=raw,file=fraqshift_kernel.bin,if=floppy -drive format=raw,file=fraq_hdd.img,if=ide
+
+
+
 
 
 :menu
