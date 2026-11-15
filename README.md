@@ -84,7 +84,7 @@ Fraqshift eliminates legacy bloat and compilation layers through a clean, multi-
     *   **UPDATED DESIGN:** Build a non-overlapping Tiling Split-Screen environment to prevent bare-metal drawing collision over the hardware background image. Dedicated left window space mapped for a lightweight web terminal, and right window block mapped for CLI execution.
     *   Implement an interactive klick-hitbox engine tracking PS/2 mouse deltas and click state flags (`r13b`) to allow fluid window repositioning.
 
-- [ ] **Phase 12: Memory Matrix Isolation & Ring 3 Security**  (UPCOMING)
+- [x] **Phase 12: Memory Matrix Isolation & Ring 3 Security**  (UPCOMING)
     *   Build out processor Model-Specific Registers (MSR) and safe 64-bit Paging boundary walls.
     *   Enforce hardware-level memory clipping, establishing a permanent partition between the secure Kernel Space and isolated application processes (Ring 3 User Mode) to stop execution-level crashes.
 
@@ -92,7 +92,7 @@ Fraqshift eliminates legacy bloat and compilation layers through a clean, multi-
     *   Optimize the native IDE/ATA hard disk controller driver to allow direct sector data pipelining.
     *   Implement an light dynamic directory file allocation table to track, read, and write stored documents using real named addresses without raw sector referencing.
 
-- [ ] **Phase 14: PCI-Bus Scanning & Intel e1000 Netstack**  (UPCOMING)
+- [x] **Phase 14: PCI-Bus Scanning & Intel e1000 Netstack**  (UPCOMING)
     *   Develop a bare-metal PCI-bus hardware scanner to discover and communicate with onboard peripherals.
     *   Write a native hardware driver for the emulated Intel e1000 Gigabit Ethernet network controller utilizing Memory-Mapped I/O (MMIO).
     *   Design a zero-copy, single-pass network stack managing ARP, IPv4/IPv6, UDP, and TCP protocols directly inside high-speed registers to execute remote text-parsing web connections.
