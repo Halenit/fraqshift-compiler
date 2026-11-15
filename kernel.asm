@@ -18,39 +18,80 @@ start_bootloader:
     ; ==========================================================================
     ; PHASE 11: INITIALIZE VESA BIOS EXTENSIONS (VBE) GRAPHICS MODE
     ; ==========================================================================
-    mov ax, 0x4F02          ; VBE Function: Set Graphics Mode
-    mov bx, 0x4117          ; FIXED: Force true 1024x768 @ 32-bit color Linear Framebuffer!
-    int 0x10                ; Call BIOS video service
-    cmp ax, 0x004F          ; Check if VBE function succeeded
-    jne .disk_error         ; If graphics initialization failed, halt boot
+;    mov ax, 0x4F02              ; VBE Function: Set Graphics Mode
+;    mov bx, 0x4118              ; FIXED: Force true 1024x768 @ 32-bit color Linear Framebuffer!
+;    int 0x10                    ; Call BIOS video service
+;    cmp ax, 0x004F              ; Check if VBE function succeeded
+;    jne .disk_error             ; If graphics initialization failed, halt boot
 
-    ; --- Load Stage 2 Kernel from Hard Disk ---
-    mov ah, 0x02            ; BIOS Read Sectors function
-    mov al, 60              ; Load 60 sectors (7.5 KB of code space)
-    mov ch, 0               ; Cylinder 0
-    mov cl, 2               ; Start reading from sector 2 (right after MBR)
-    mov dh, 0               ; Head 0
-    mov bx, 0x7E00          ; Read kernel directly into memory right after bootloader
-    int 0x13                ; Call BIOS disk service
-    jc .disk_error          ; If carry flag set, disk read failed
 
-    cli                     ; Disable interrupts for hardware switch
+        ; --- Read first 17 sectors (Head 0, Sectors 2-18) ---
+    mov ah, 0x02
+    mov al, 17              ; Max remaining sectors on Track 0, Head 0
+    mov ch, 0
+    mov cl, 2
+    mov dh, 0
+    mov bx, 0x7E00
+    int 0x13
+    jc .disk_error
 
-    ; --- Set up 64-bit Page Tables at a safe address (0x9000) ---
-    mov edi, 0x9000
-    mov cr3, edi
-    xor eax, eax
-    mov ecx, 4096
-    rep stosd
+    ; --- Read next 18 sectors (Head 1, Sectors 1-18) ---
+    mov ah, 0x02
+    mov al, 18              ; Full Track 0, Head 1
+    mov ch, 0
+    mov cl, 1
+    mov dh, 1
+    mov bx, 0xA000          ; 0x7E00 + (17 * 512)
+    int 0x13
+    jc .disk_error
+
+    ; --- Read next 18 sectors (Cylinder 1, Head 0, Sectors 1-18) ---
+    mov ah, 0x02
+    mov al, 18              ; Full Track 1, Head 0 (Total 53 sectors = 26.5 KB)
+    mov ch, 1
+    mov cl, 1
+    mov dh, 0
+    mov bx, 0xC400          ; 0xA000 + (18 * 512)
+    int 0x13
+    jc .disk_error
+    ; --- Read next 18 sectors (Cylinder 1, Head 1 -> Physical 0xE800) ---
+    mov ax, 0x0E80
+    mov es, ax
+    xor bx, bx
+    mov ah, 0x02
+    mov al, 10              
+    mov ch, 1
+    mov cl, 1
+    mov dh, 1
+    int 0x13
+    jc .disk_error
+
     
-    ; ==========================================================================
-    ; PHASE 11: INITIAL 64-BIT BASE PAGE TABLES (16-BIT COMPLIANT)
-    ; ==========================================================================
-    mov dword [0x9000], 0xA003     ; PML4 index 0 -> PDPT (0xA000)
-    mov dword [0xA000], 0xB003     ; GB 0 (0MB to 1GB) -> PD table for low RAM (0xB000)
-    mov dword [0xA018], 0xC003     ; GB 3 (3GB to 4GB) -> Dedicated PD table for Graphics (0xC000)
-    mov dword [0xB000], 0x0083     ; Identity map 0MB to 2MB (Kernel execution space)
-    mov dword [0xB008], 0x00200083 ; Identity map 2MB to 4MB (Kernel extra heap room)
+
+    xor ax, ax
+    mov es, ax              ; Reset ES back to 0 before setting up Page Tables
+
+        cli                     ; Disable interrupts for hardware switch
+
+    ; --- Set up 64-bit Page Tables safely at 0x50000 (0x5000:0x0000) ---
+    mov ax, 0x5000
+    mov es, ax
+    xor di, di
+    xor eax, eax
+    mov ecx, 4096           ; Clear 16 KB (0x50000 - 0x53FFF)
+    rep stosd
+
+    ; Populate Page Tables via ES (0x50000 base)
+    mov dword [es:0x0000], 0x51003 ; PML4[0] -> PDPT at 0x51000
+    mov dword [es:0x1000], 0x52003 ; PDPT[0] -> Low RAM PD at 0x52000
+    mov dword [es:0x1018], 0x53003 ; PDPT[3] -> Graphics PD at 0x53000
+    mov dword [es:0x2000], 0x0083  ; Identity map 0MB - 2MB
+    mov dword [es:0x2008], 0x00200083 ; Identity map 2MB - 4MB
+
+    xor ax, ax
+    mov es, ax              ; Restore ES to 0
+    mov eax, 0x50000
+    mov cr3, eax            ; Load PML4 base address (0x50000) into CR3
 
     ; --- Enable PAE ---
     mov eax, 10100000b
@@ -111,13 +152,20 @@ stage2_kernel:
     mov gs, ax
     mov ss, ax
 
-    ; --- PHASE 11: 64-BIT HIGH-SPEED HARDWARE BRIDGES ---
-    ; Safely map the true physical hardware memory regions inside 64-bit mode
-    mov rax, 0xE0000083            ; QEMU VESA Standard Address with present/writable/size flags
-    mov [0xC800], rax              ; Map directly to the 3.5GB threshold inside PD 2
-    
-    mov rax, 0xFD000083            ; QEMU Cirrus Legacy Address with flags
-    mov [0xCF40], rax              ; Map directly to the 3.9GB threshold inside PD 2
+    ; --- PHASE 11: 64-BIT HIGH-SPEED HARDWARE BRIDGES (AT 0x53000) ---
+    mov rax, 0xE0000083         ; QEMU VESA Standard Address (0xE0000000 - 0xE01FFFFF)
+    mov [0x53800], rax          ; Map inside Graphics PD at 0x53000
+    mov rax, 0xE0200083         ; Next 2MB graphics memory block (0xE0200000 - 0xE03FFFFF)
+    mov [0x53808], rax          ; Map next 2MB page entry
+
+    mov rax, 0xFD000083         ; QEMU Legacy LFB Address (0xFD000000 - 0xFD1FFFFF)
+    mov [0x53F40], rax          ; Map inside Graphics PD at 0x53000
+    mov rax, 0xFD200083         ; Next 2MB graphics memory block (0xFD200000 - 0xFD3FFFFF)
+    mov [0x53F48], rax          ; Map next 2MB page entry
+
+
+
+
 
     ; --- FLUSH CPU CACHE (TLB INVALIDATION) ---
     ; Force the MMU to immediately register the new hardware memory paths
@@ -128,8 +176,11 @@ kernel_main:
     push rbp
     mov rbp, rsp
 
+    call set_vbe_1024x768
+
+
     ; --- ACTIVATE TRUE 1080P VBE GRAPHICS MODE IMMEDIATELY ---
-    call vbe_set_1080p          ; Kick the hardware into 1920x1080 True Color!
+    
 
 
     ; --- PHASE 13: INITIALIZE SYSTEM HEAP ALLOCATOR ---
@@ -166,7 +217,7 @@ kernel_main:
     jne .fraq_test_stable_fail  ; If verification fails, bypass drawing completely
 
     ; SUCCESS! Draw the character 'F' line by line directly into video RAM (0xFD000000)
-    mov r11, 0xFD000000         ; Top-left corner of the physical screen
+    mov r11, 0xE0000000             ; Top-left corner of the physical screen
     
     ; Row 1: Top bar of 'F' (4 pixels wide)
     mov dword [r11], 0x00FFFFFF
@@ -1618,22 +1669,24 @@ draw_mouse_pointer:
     mov r11, 0xFD000000         ; Base Graphics VRAM
     
     ; Y-offset calculation for 640 width (2560 bytes per row) [3.1]
-    mov ecx, 2560               
-    imul rbx, rcx               
-    add r11, rbx                
+    mov ecx, 4096
+    imul rbx, rcx
+    add r11, rbx
 
     ; X-offset calculation
-    shl rax, 2                  
-    add r11, rax                
+    shl rax, 2
+    add r11, rax
 
-    ; Draw the crisp white arrow matrix safely [3.1]
+    ; Draw the crisp white arrow matrix safely
     mov dword [r11], 0x00FFFFFF
-    mov dword [r11 + 2560], 0x00FFFFFF
-    mov dword [r11 + 2560 + 4], 0x00FFFFFF
-    mov dword [r11 + 5120], 0x00FFFFFF
-    mov dword [r11 + 5120 + 4], 0x00FFFFFF
-    mov dword [r11 + 5120 + 8], 0x00FFFFFF
-    mov dword [r11 + 7680], 0x00FFFFFF
+    mov dword [r11 + 4096], 0x00FFFFFF
+    mov dword [r11 + 4096 + 4], 0x00FFFFFF
+    mov dword [r11 + 8192], 0x00FFFFFF
+    mov dword [r11 + 8192 + 4], 0x00FFFFFF
+    mov dword [r11 + 8192 + 8], 0x00FFFFFF
+    mov dword [r11 + 12288], 0x00FFFFFF
+
+
     pop r12
     pop r11
     pop rcx
@@ -1641,24 +1694,47 @@ draw_mouse_pointer:
     pop rax
     ret
 
+
+
 gui_desktop_loop:
+
     ; --- FRAQSHIFT GRAPHIC DESKTOP (CLEAN RAM CACHED ENGINE) ---
     mov r11, 0x580              
-    mov dword [abs r11], 320    
+    mov dword [abs r11], 512    
     mov r11, 0x584              
-    mov dword [abs r11], 240 
+    mov dword [abs r11], 384 
 
     ; Initialize dynamic Window location variables in RAM
     mov r11, 0x590              ; Address for Window X
     mov dword [abs r11], 150    ; Default Start X = 150
     mov r11, 0x594              ; Address for Window Y
     mov dword [abs r11], 100    ; Default Start Y = 100
+    ; Initialize text counter array tracker to absolute zero
+    mov r11, 0x5A8              ; RAM address for text character counter
+    mov dword [abs r11], 0      ; Clear it completely at system boot! 
+    ; Initialize Window Input Focus register flag to zero
+    mov r11, 0x5AC              ; RAM address for window input focus
+    mov dword [abs r11], 0      ; 0 = Unfocused/Locked at boot setup
 
-    mov r14, 320                
-    mov r15, 240                
+    ; Initialize text cursor coordinates in RAM
+    mov r11, 0x5A0              ; RAM address for Text X
+    mov dword [abs r11], 10     ; Start 10 pixels from the left window border
+    mov r11, 0x5A4              ; RAM address for Text Y
+    mov dword [abs r11], 10     ; Start 10 pixels down from the black title bar
+
+    mov r14, 512                
+    mov r15, 384                
 
     ; Step 1: Stream your custom Fraq Bat background directly from the Virtual Hard Drive!
-    call draw_fraq_background   
+    ; Step 1: Temporary dark cyberpunk background (1024x768)
+    ; call draw_fraq_background
+    mov r8, 0                   ; Start X = 0
+    mov r9, 0                   ; Start Y = 0
+    mov r10, 1024               ; Full screen width
+    mov r12, 768                ; Full screen height
+    mov eax, 0x000D0E12         ; Deep dark slate-black background
+    call draw_rectangle
+ 
 
     ; Step 2: Cache both cyberpunk icons into RAM immediately
     ;call preload_icons_to_ram
@@ -1666,16 +1742,16 @@ gui_desktop_loop:
     ; Step 3: Draw the static interface components ONCE
     ; 1. Draw the solid black bar at the bottom
     mov r8, 0                   
-    mov r9, 440                 
-    mov r10, 640                
+    mov r9, 728                 
+    mov r10, 1024                
     mov r12, 40                 
     mov eax, 0x00000000         
     call draw_rectangle         
 
     ; 2. Draw the neon-lila signature accent line
     mov r8, 0                   
-    mov r9, 439                 
-    mov r10, 640                
+    mov r9, 727                 
+    mov r10, 1024                
     mov r12, 2                  
     mov eax, 0x00FF00FF         
     call draw_rectangle         
@@ -1690,17 +1766,34 @@ gui_desktop_loop:
     call mouse_save_back
     call draw_mouse_pointer
 
+    ; Re-enable PS/2 Keyboard Port (Port 1) after mouse initialization
+    mov dx, 0x64
+    mov al, 0xAE                ; Command 0xAE: Enable first PS/2 port (Keyboard)
+    out dx, al
+
+
+
 .mouse_poll_loop:
     mov dx, 0x64
     in al, dx
     
     test al, 0x01               
     jz .mouse_poll_loop         
-    test al, 0x20               
-    jz .consume_keyboard
+    test al, 0x20
+    jnz .is_mouse_data          ; If bit 5 is 1, it's mouse data! Keep polling the packets!
+    
+    ; --- IT'S PURE KEYBOARD DATA! SAVE IT TO CACHE DIRECTLY ---
+    mov dx, 0x60
+    in al, dx                   ; Read the raw Scancode directly from the hardware port!
+    mov r12b, al                ; LOCK THE SCANCODE IN R12B IMMEDIATELY! 🔒
+    jmp .consume_keyboard       ; Jump straight down to your text engine!
+
+.is_mouse_data:
+
     mov dx, 0x60
     in al, dx                   ; Read Byte 1 cleanly (No double erasing here!)
-    mov r12b, al                ; SAVE CLICK STATE IN R12B FOR LATER! 
+    mov r13b, al                ; FIXED: Save mouse click state in R13B instead! 🔒
+
 
 .wait_byte2:
     mov dx, 0x64
@@ -1731,25 +1824,56 @@ gui_desktop_loop:
     jge .check_max_x
     mov r14, 5
 .check_max_x:
-    cmp r14, 625
+    cmp r14, 1009
     jle .check_min_y
-    mov r14, 625
+    mov r14, 1009
 .check_min_y:
     cmp r15, 5
     jge .check_max_y
     mov r15, 5
 .check_max_y:
-    cmp r15, 465
+    cmp r15, 753
     jle .done_movement
-    mov r15, 465
+    mov r15, 753
 
 .done_movement:
-    ; --- INTERACTIVE CYBERPUNK WINDOW ENGINE (TRUE SILK DRAG) ---
-    ; Step 1: Check if the Left Mouse Button is currently held down (Bit 0 of R12B)
-    test r12b, 0x01             ; Is left button pressed?
-    jz .skip_drag               ; If NOT pressed, skip dragging entirely!
+    ; --- INTERACTIVE CYBERPUNK WINDOW CONTOUR DRAG ENGINE ---
+    ; Check if the Left Mouse Button is currently held down (Bit 0 of R13B)
+    test r13b, 0x01             ; Is left button pressed?
+    jz .mouse_button_is_up      ; If NOT pressed, jump to handle release logic cleanly!
+    ; --- CHECK IF USER CLICKED INSIDE THE WORKSPACE BODY (SET FOCUS) ---
+    mov r11, 0x590
+    mov ecx, [abs r11]          ; ECX = Window X
+    mov r11, 0x594
+    mov edx, [abs r11]          ; EDX = Window Y
+    add edx, 24                 ; Workspace starts below title bar & neon line
 
-    ; --- MOUSE BUTTON IS DOWN: VALIDATE HITBOX ---
+    cmp r14, rcx                ; Mouse X >= Window X?
+    jl .clear_window_focus
+    add rcx, 340
+    cmp r14, rcx                ; Mouse X <= Window X + 340?
+    jg .clear_window_focus
+
+    cmp r15, rdx                ; Mouse Y >= Window Y + 24?
+    jl .clear_window_focus
+    add rdx, 176
+    cmp r15, rdx                ; Mouse Y <= Window Y + 200?
+    jg .clear_window_focus
+
+    ; Inside workspace body -> Activate typing focus!
+    mov r11, 0x5AC
+    mov dword [abs r11], 1
+    jmp .check_titlebar_drag
+
+.clear_window_focus:
+    ; Clicked outside workspace body -> Lock typing focus
+    mov r11, 0x5AC
+    mov dword [abs r11], 0
+
+.check_titlebar_drag:
+
+
+    ; Load current Window coordinates from RAM to check the title bar hitbox
     mov r11, 0x590
     mov ecx, [abs r11]          ; ECX = Window X
     mov r11, 0x594
@@ -1769,63 +1893,59 @@ gui_desktop_loop:
     cmp r15, rdx
     jg .skip_drag
 
-    ; --- CALCULATE MOVEMENT DELTA AND UPDATE RAM IMMEDIATELY ---
+    ; --- MOUSE IS ACTIVE DRAGGING! UPDATE COORDINATES IN RAM SILENTLY ---
     mov r11, 0x580
     mov eax, [abs r11]          ; EAX = Old Mouse X
     mov ebx, r14d
     sub ebx, eax                ; EBX = X Movement delta
-    
+    mov r11, 0x590
+    add [abs r11], ebx          ; Update Window X in RAM!
+
     mov r11, 0x584
     mov eax, [abs r11]          ; EAX = Old Mouse Y
-    mov r8d, r15d
-    sub r8d, eax                ; R8D = Y Movement delta
-
-    ; Push the new window coordinates straight into RAM variables cleanly
-    mov r11, 0x590
-    add [abs r11], ebx          
+    mov ebx, r15d
+    sub ebx, eax                ; EBX = Y Movement delta
     mov r11, 0x594
-    add [abs r11], r8d          
+    add [abs r11], ebx          ; Update Window Y in RAM!
 
-    ; Set our drag flag to 1 so the system knows we need to clean up on release
+    ; Set our drag status flag in RAM to 1 (Active Dragging)
     mov r11, 0x598
     mov dword [abs r11], 1
+    jmp .skip_drag
 
-    ; --- RENDER LIVE WIREFRAME PREVIEW OVER THE DESKTOP ---
-    ; We draw a thin 2-pixel neon line boundary box of the new position instantly
-    mov r11, 0x590
-    mov r8d, [abs r11]          ; Current Window X
-    mov r11, 0x594
-    mov r9d, [abs r11]          ; Current Window Y
-
-    ; 1. Top Outline Wire (Width=340, Height=2)
-    push r9
-    mov r10, 340
-    mov r12, 2
-    mov eax, 0x0000FFFF         ; Cyan Neon color
-    call draw_rectangle
-    pop r9
-
-    ; 2. Bottom Outline Wire (Width=340, Height=2 at Y+198)
-    push r9
-    add r9, 198
-    mov r10, 340
-    mov r12, 2
-    mov eax, 0x0000FFFF
-    call draw_rectangle
-    pop r9
-    jmp .skip_solid_draw
-
-.skip_drag:
-    ; IF THE USER JUST RELEASED THE MOUSE BUTTON:
+.mouse_button_is_up:
+    ; Check if we were actually dragging before the button went up
     mov r11, 0x598
     cmp dword [abs r11], 1
-    jne .skip_solid_draw        ; If we weren't dragging, skip the heavy disk refresh!
+    jne .skip_drag              ; If we weren't dragging, user is just moving mouse normally - skip redraw!
 
-    ; Clean redraw once when user drops the window
-    mov dword [abs r11], 0
-    call draw_fraq_background   ; Wipe old trails from disk exactly once!
+    
+    ; --- SINGLE FRAME CLEAN REDRAW ON RELEASE ---
+    mov dword [abs r11], 0      ; Reset flag
+    ; call draw_fraq_background
+    mov r8, 0
+    mov r9, 0
+    mov r10, 1024
+    mov r12, 768
+    mov eax, 0x000D0E12
+    call draw_rectangle
 
-.skip_solid_draw:
+    
+    ; Re-render the taskbar framework safely at the bottom
+    mov r8, 0                   
+    mov r9, 728                 
+    mov r10, 1024                
+    mov r12, 40                 
+    mov eax, 0x00000000         
+    call draw_rectangle         ; Black Taskbar
+    mov r8, 0                   
+    mov r9, 727                 
+    mov r10, 1024                
+    mov r12, 2         
+    mov eax, 0x00FF00FF         
+    call draw_rectangle         ; Lila Accent Line
+
+.skip_drag:
     push r14
     push r15
 
@@ -1846,33 +1966,88 @@ gui_desktop_loop:
     mov [abs r11], r15d         
 
 .redraw_desktop_frame:
-    ; Render the actual solid window box on top cleanly
+    ; Render the solid app window frame safely
     call draw_window_frame      
+    call draw_window_text       ; Render live typed text inside the window workspace
+    
 
-    ; Re-render the taskbar framework safely at the bottom row
+    ; Re-render the taskbar framework safely at the bottom row cleanly
     mov r8, 0                   
-    mov r9, 440                 
-    mov r10, 640                
+    mov r9, 728                 
+    mov r10, 1024                
     mov r12, 40                 
     mov eax, 0x00000000         
     call draw_rectangle         ; Black Taskbar
+    
     mov r8, 0                   
-    mov r9, 439                 
-    mov r10, 640                
+    mov r9, 727                 
+    mov r10, 1024                
     mov r12, 2         
     mov eax, 0x00FF00FF         
     call draw_rectangle         ; Lila Accent Line
 
+
+   
+
 .render_pointer_top:
+
     ; Take fresh backup of mouse background area and drop the cursor arrow
     call mouse_save_back        
     call draw_mouse_pointer     
-    jmp .mouse_poll_loop
+    jmp .mouse_poll_loop        
 
 .consume_keyboard:
-    mov dx, 0x60
-    in al, dx                   
+   
+
+    ; 1. Temporarily bypass focus lock to verify direct keyboard output
+    mov r11, 0x5AC
+    ; cmp dword [abs r11], 1
+    ; jne .finish_keyboard_poll
+
+    mov al, r12b                ; Raw PS/2 scancode saved from port 0x60
+
+    ; Ignore key release events (Break codes have bit 7 set)
+    test al, 0x80
+    jnz .finish_keyboard_poll
+
+    ; 2. Translate scancode to ASCII using scan_to_ascii table
+    and rax, 0x7F
+    lea rsi, [rel scan_to_ascii]
+    mov al, byte [rsi + rax]
+
+    ; If scan_to_ascii returned 0 (e.g., placed past sector 63), fallback to 'A'
+    cmp al, 0
+    jne .valid_ascii_char
+    mov al, 'A'
+.valid_ascii_char:
+
+
+    cmp al, 0                   ; Ignore non-printable keys (Shift, Ctrl, etc.)
+    jz .finish_keyboard_poll
+
+    ; 3. Store ASCII character in RAM text buffer (0x180000)
+    mov rbx, 0x180000
+    mov r11, 0x5A8
+    mov ecx, [abs r11]          ; Current character count
+
+    cmp ecx, 255                ; Prevent buffer overflow
+    jge .finish_keyboard_poll
+
+    mov [rbx + rcx], al         ; Save character directly to 64-bit RAM buffer (0x180000)
+    inc ecx                     ; Increment count
+    mov [abs r11], ecx          ; Store updated count in RAM
+
+    call draw_window_text       ; Draw the new letter on screen IMMEDIATELY!
+
+
+.finish_keyboard_poll:
     jmp .mouse_poll_loop
+
+
+
+
+
+
 
 ; --- FRAQSHIFT GRAPHICS COMPONENT: RECTANGLE ENGINE ---
 draw_rectangle:
@@ -1887,7 +2062,7 @@ draw_rectangle:
     mov rdi, r10                
     mov r11, 0xFD000000
     mov rbx, r9
-    imul rbx, 2560              
+    imul rbx, 4096              
     add r11, rbx
     mov rbx, r8
     shl rbx, 2                  
@@ -1908,6 +2083,258 @@ draw_rectangle:
     pop rbx
     ret
 
+draw_window_text:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r11
+    push r15
+
+    mov r11, 0x5A8
+    mov r15d, [abs r11]         ; Read current character count from RAM
+    
+    ; Safety gate against uninitialized RAM values
+    cmp r15d, 255
+    ja .global_text_escape
+    cmp r15d, 0
+    jz .global_text_escape
+
+    mov rsi, 0x180000           ; Text buffer base address in RAM
+    mov r8, 12                  ; Relative X padding inside window
+    mov r9, 10                  ; Relative Y padding inside window
+
+.global_render_loop:
+    push rsi
+    push r8
+    push r9
+
+    movzx rax, byte [rsi]       ; Fetch next ASCII character from buffer
+    cmp al, 32                  ; Ignore control characters (< 32)
+    jb .skip_invalid_char
+    cmp al, 126                 ; Ignore non-ASCII characters (> 126)
+    ja .skip_invalid_char
+
+    call draw_char_in_window    ; Render character glyph using font_rom
+
+.skip_invalid_char:
+    pop r9
+    pop r8
+    pop rsi
+
+    inc rsi                     ; Advance to next character in buffer
+    add r8, 10                  ; Advance cursor 10 pixels right
+
+    cmp r8, 320                 ; Wrap to next line at right window edge
+    jl .global_continue_loop
+    mov r8, 12
+    add r9, 16
+
+.global_continue_loop:
+    dec r15d
+    jnz .global_render_loop
+
+.global_text_escape:
+    pop r15
+    pop r11
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+draw_char_in_window:
+    ; Inputs: AL = ASCII character (32..126), R8 = Rel X, R9 = Rel Y
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push r11
+    push rsi
+
+    ; Convert lowercase 'a'-'z' to uppercase 'A'-'Z' for clean 8x8 glyph lookup
+    cmp al, 'a'
+    jb .check_glyph_bounds
+    cmp al, 'z'
+    ja .check_glyph_bounds
+    sub al, 32
+
+.check_glyph_bounds:
+    sub al, 32
+    movzx rax, al
+    shl rax, 3                  ; 8 bytes per character in built-in 8x8 font
+    lea rsi, [rel win_font_8x8]
+    add rsi, rax
+
+    ; Calculate absolute VRAM screen pointer (0xE0000000, Pitch = 4096)
+    mov rbx, 0x590
+    mov r11d, [abs rbx]         ; Window X
+    add r11, r8                 ; + Relative X
+
+    mov rbx, 0x594
+    mov edx, [abs rbx]          ; Window Y
+    add rdx, 28                 ; + Title bar height & border
+    add rdx, r9                 ; + Relative Y
+
+    mov rbx, r11
+    mov r11, 0xE0000000         ; Active 1024x768 LFB address
+    imul rdx, 4096              ; Row pitch = 4096 bytes
+    add r11, rdx
+    shl rbx, 2                  ; X * 4 bytes per pixel
+    add r11, rbx
+
+    ; Draw crisp 8x8 neon cyan-green glyph (scaled 2x vertically for 8x16 look)
+    mov rcx, 8
+
+.win_glyph_row:
+    push r11
+    mov bl, byte [rsi]
+    mov rdx, 8
+
+.win_glyph_col:
+    shl bl, 1
+    jnc .win_glyph_skip
+    mov dword [r11], 0x0000FF66         ; Top pixel row
+    mov dword [r11 + 4096], 0x0000FF66  ; Doubled height pixel row
+.win_glyph_skip:
+    add r11, 4
+    dec rdx
+    jnz .win_glyph_col
+
+    pop r11
+    add r11, 8192               ; Advance 2 screen rows (2 * 4096)
+    inc rsi
+    dec rcx
+    jnz .win_glyph_row
+
+    pop rsi
+    pop r11
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+; --- BUILT-IN 8x8 CYBERPUNK BITMAP FONT (ASCII 32..95) ---
+win_font_8x8:
+    db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 ; 32 ' '
+    db 0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00 ; 33 '!'
+    db 0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00 ; 34 '"'
+    db 0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00 ; 35 '#'
+    db 0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00 ; 36 '$'
+    db 0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00 ; 37 '%'
+    db 0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00 ; 38 '&'
+    db 0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00 ; 39 '''
+    db 0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00 ; 40 '('
+    db 0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00 ; 41 ')'
+    db 0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00 ; 42 '*'
+    db 0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00 ; 43 '+'
+    db 0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06 ; 44 ','
+    db 0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00 ; 45 '-'
+    db 0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00 ; 46 '.'
+    db 0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00 ; 47 '/'
+    db 0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00 ; 48 '0'
+    db 0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00 ; 49 '1'
+    db 0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00 ; 50 '2'
+    db 0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00 ; 51 '3'
+    db 0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00 ; 52 '4'
+    db 0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00 ; 53 '5'
+    db 0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00 ; 54 '6'
+    db 0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00 ; 55 '7'
+    db 0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00 ; 56 '8'
+    db 0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00 ; 57 '9'
+    db 0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00 ; 58 ':'
+    db 0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06 ; 59 ';'
+    db 0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00 ; 60 '<'
+    db 0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00 ; 61 '='
+    db 0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00 ; 62 '>'
+    db 0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00 ; 63 '?'
+    db 0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00 ; 64 '@'
+    db 0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00 ; 65 'A'
+    db 0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00 ; 66 'B'
+    db 0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00 ; 67 'C'
+    db 0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00 ; 68 'D'
+    db 0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00 ; 69 'E'
+    db 0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00 ; 70 'F'
+    db 0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00 ; 71 'G'
+    db 0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00 ; 72 'H'
+    db 0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00 ; 73 'I'
+    db 0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00 ; 74 'J'
+    db 0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00 ; 75 'K'
+    db 0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00 ; 76 'L'
+    db 0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00 ; 77 'M'
+    db 0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00 ; 78 'N'
+    db 0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00 ; 79 'O'
+    db 0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00 ; 80 'P'
+    db 0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00 ; 81 'Q'
+    db 0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00 ; 82 'R'
+    db 0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00 ; 83 'S'
+    db 0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00 ; 84 'T'
+    db 0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00 ; 85 'U'
+    db 0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00 ; 86 'V'
+    db 0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00 ; 87 'W'
+    db 0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00 ; 88 'X'
+    db 0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00 ; 89 'Y'
+    db 0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00 ; 90 'Z'
+    db 0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00 ; 91 '['
+    db 0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00 ; 92 '\'
+    db 0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00 ; 93 ']'
+    db 0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00 ; 94 '^'
+    db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF ; 95 '_'
+
+; --- BOCHS VBE HARDWARE DRIVER: TRUE 1024x768 @ 32-BIT ---
+set_vbe_1024x768:
+    push rax
+    push rdx
+
+    mov dx, 0x01CE
+    mov ax, 4
+    out dx, ax
+    mov dx, 0x01CF
+    mov ax, 0                   ; Disable VBE during mode switch
+    out dx, ax
+
+    mov dx, 0x01CE
+    mov ax, 1
+    out dx, ax
+    mov dx, 0x01CF
+    mov ax, 1024                ; Set X resolution = 1024
+    out dx, ax
+
+    mov dx, 0x01CE
+    mov ax, 2
+    out dx, ax
+    mov dx, 0x01CF
+    mov ax, 768                 ; Set Y resolution = 768
+    out dx, ax
+
+    mov dx, 0x01CE
+    mov ax, 3
+    out dx, ax
+    mov dx, 0x01CF
+    mov ax, 32                  ; Set 32-bit color depth
+    out dx, ax
+
+    mov dx, 0x01CE
+    mov ax, 4
+    out dx, ax
+    mov dx, 0x01CF
+    mov ax, 0x41                ; Enable VBE with Linear Framebuffer (LFB)
+    out dx, ax
+
+    pop rdx
+    pop rax
+    ret
+
+
 
 ; --- FRAQSHIFT GRAPHICS COMPONENT: DYNAMIC WINDOW COMPOSITOR ---
 
@@ -1927,12 +2354,11 @@ draw_window_frame:
     mov r9d, [abs rbx]          ; R9 = Current Window Y position
 
     ; 1. Draw main window body (Dark charcoal workspace)
-    ; Width and Height remain stable, but position shifts dynamically!
     push r8
     push r9
     add r9, 22                  ; Window body starts right under the title bar
     mov r10, 340                ; Width = 340
-    mov r12, 178                ; Height = 200 - 22 title bar = 178
+    mov r12, 178                ; Height = 178
     mov eax, 0x001C1E24         ; Color = Sleek tech dark charcoal
     call draw_rectangle
     pop r9
@@ -1959,7 +2385,12 @@ draw_window_frame:
     pop r9
     pop r8
     pop rax
-    ret
+    ret                         ; Clean and safe exit!
+
+
+
+
+
 
 ; --- FRAQSHIFT GRAPHICS COMPONENT: WIREFRAME COMPOSITOR (PERFEKT SYNCHRONIZED) ---
 
@@ -1972,7 +2403,7 @@ mouse_save_back:
     push rdi
     mov r11, 0xFD000000
     mov rbx, r15
-    imul rbx, 2560              
+    imul rbx, 4096              
     add r11, rbx
     mov rbx, r14
     shl rbx, 2                  
@@ -1998,7 +2429,7 @@ mouse_save_back:
     mov eax, [abs r11 + 28]
     mov [abs rdi + 28], eax
     pop r11
-    add r11, 2560               
+    add r11, 4096               
     add rdi, 32                 
     dec rcx
     jnz .save_row
@@ -2017,7 +2448,7 @@ mouse_restore_back:
     push rsi
     mov r11, 0xFD000000
     mov rbx, r15
-    imul rbx, 2560
+    imul rbx, 4096
     add r11, rbx
     mov rbx, r14
     shl rbx, 2
@@ -2043,7 +2474,7 @@ mouse_restore_back:
     mov eax, [abs rsi + 28]
     mov [abs r11 + 28], eax
     pop r11
-    add r11, 2560
+    add r11, 4096
     add rsi, 32
     dec rcx
     jnz .restore_row
@@ -2159,9 +2590,20 @@ draw_start_icon:
     pop rax
     ret
 
+
 align 16
 fraq_icon_data:
     incbin "fraq_start_icon.bin" ; NASM bakes your 4 KB image file directly into the kernel
+
+
+
+
+
+
+
+
+
+
 
 align 16
 scan_to_ascii:
@@ -2299,6 +2741,11 @@ font_rom:
     db 0x30, 0x18, 0x18, 0x0C, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; } (Index 93)
     db 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00 ; | (Index 94)
     db 0x0C, 0x18, 0x18, 0x30, 0x18, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; { (Index 91)
+
+; --- FRAQSHIFT WINDOW TEXT BUFFER RENDERER (1024x768 @ 0xE0000000) ---
+
+
+
 
 
 
