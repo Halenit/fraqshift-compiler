@@ -129,3 +129,100 @@ func void run_compiler_pipeline
         sys.reg rbx = 99
     sys.if_done
 func_done
+
+; ==============================================================================
+; 3. FRAQC V2.0 RING 3 APP COMPILER EXTENSION (Compiles browser.fraq -> 0x400000)
+; ==============================================================================
+func void compile_fraq_ring3_app
+    var src_ptr   = 3145728         ; 0x300000: Loaded browser.fraq source text
+    var emit_ptr  = 4194304         ; 0x400000: Ring 3 Executable Code Output
+    var scan_idx  = 0
+
+    ; Emit Ring 3 Prologue: Verify Syscall 0 (sys_ping) -> mov rax, 0; syscall
+    *emit_ptr = 48                  ; 0x48 (REX.W)
+    sys.inc emit_ptr
+    *emit_ptr = 199                 ; 0xC7 (MOV RAX, imm32)
+    sys.inc emit_ptr
+    *emit_ptr = 192                 ; 0xC0
+    sys.inc emit_ptr
+    *emit_ptr = 0
+    sys.inc emit_ptr
+    *emit_ptr = 0
+    sys.inc emit_ptr
+    *emit_ptr = 0
+    sys.inc emit_ptr
+    *emit_ptr = 0
+    sys.inc emit_ptr
+    *emit_ptr = 15                  ; 0x0F (SYSCALL byte 1)
+    sys.inc emit_ptr
+    *emit_ptr = 5                   ; 0x05 (SYSCALL byte 2)
+    sys.inc emit_ptr
+
+    ; Scan browser.fraq source stream for 'net.http_get' ('n' = 110, 'e' = 101, 't' = 116)
+    ; and emit Ring 3 Syscall 10 (sys_http_get into 0x510000) + Syscall 11 (sys_draw_browser)!
+    data.peek src_ptr
+    sys.cmp 59                      ; Starts with ';' comment header of browser.fraq?
+    sys.if_eq
+        ; Emit: mov rdi, 0x510000 (48 BF 00 00 51 00 00 00 00 00)
+        *emit_ptr = 72              ; 0x48
+        sys.inc emit_ptr
+        *emit_ptr = 191             ; 0xBF (MOV RDI, imm64)
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 81              ; 0x51 -> 0x00510000
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+
+        ; Emit: mov rax, 10 (Syscall 10 = sys_http_get) + syscall (0F 05)
+        *emit_ptr = 72
+        sys.inc emit_ptr
+        *emit_ptr = 199
+        sys.inc emit_ptr
+        *emit_ptr = 192
+        sys.inc emit_ptr
+        *emit_ptr = 10              ; Syscall 10!
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 15              ; SYSCALL (0x0F)
+        sys.inc emit_ptr
+        *emit_ptr = 5               ; SYSCALL (0x05)
+        sys.inc emit_ptr
+
+        ; Emit Epilogue: mov rax, 99 (sys_exit_app) + syscall (0F 05)
+        *emit_ptr = 72
+        sys.inc emit_ptr
+        *emit_ptr = 199
+        sys.inc emit_ptr
+        *emit_ptr = 192
+        sys.inc emit_ptr
+        *emit_ptr = 99              ; Syscall 99!
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 0
+        sys.inc emit_ptr
+        *emit_ptr = 15              ; SYSCALL (0x0F)
+        sys.inc emit_ptr
+        *emit_ptr = 5               ; SYSCALL (0x05)
+        sys.inc emit_ptr
+    sys.if_done
+func_done

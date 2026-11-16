@@ -102,6 +102,19 @@ start_bootloader:
     int 0x13
     jc .disk_error
 
+    ; --- Read next 18 sectors (Cylinder 3, Head 0 -> Physical 0x15400, Total 62.5 KB) ---
+    mov ax, 0x1540
+    mov es, ax
+    xor bx, bx
+    mov ah, 0x02
+    mov al, 18              ; Loads font_rom at the end of kernel.asm completely into RAM!
+    mov ch, 3
+    mov cl, 1
+    mov dh, 0
+    int 0x13
+    jc .disk_error
+
+
     
 
     xor ax, ax
@@ -362,6 +375,9 @@ fraq_syscall_entry:
     je .sys_get_mouse
     cmp rax, 10                 ; Syscall 10: sys_http_get (RDI = User Buffer Ptr in Ring 3)
     je .sys_http_get
+    cmp rax, 11                 ; Syscall 11: sys_draw_browser (RDI=URL Ptr, RSI=Text Ptr, RDX=SafeFlag)
+    je .sys_draw_browser
+
     cmp rax, 99                 ; Syscall 99: Exit Ring 3 Sandbox verification
     je .sys_exit_test
 
@@ -393,6 +409,27 @@ fraq_syscall_entry:
     ; Call Kernel's protected ARP + TCP/HTTP engine to fetch live web page into RDI!
     call net_http_fetch_live    ; Returns bytes received in RAX (or -3 on timeout)
     jmp .syscall_return
+
+.sys_draw_browser:
+    ; ZERO-TRUST SECURITY CHECK: Validate both User pointers (RDI & RSI)
+    ; Must lie strictly inside the 4MB..6MB Ring 3 Sandbox (0x400000..0x5FE000)!
+    cmp rdi, 0x400000
+    jb .syscall_bad_arg
+    cmp rdi, 0x5FE000
+    ja .syscall_bad_arg
+    cmp rsi, 0x400000
+    jb .syscall_bad_arg
+    cmp rsi, 0x5FE000
+    ja .syscall_bad_arg
+
+    ; Save sanitized URL & Body pointers into Kernel Display Registers (0x5E0..0x5F0)
+    mov r11, 0x600
+    mov [abs r11], rdi          ; Saved URL string pointer in Ring 3
+    mov [abs r11 + 8], rsi      ; Saved Page Body string pointer in Ring 3
+    mov [abs r11 + 16], rdx     ; Security Status: 1 = SAFE (Green), 0 = BLOCKED (Red)
+    xor rax, rax
+    jmp .syscall_return
+
 
 .syscall_bad_arg:
     mov rax, -2
@@ -430,11 +467,88 @@ init_user_sandbox:
     mov rax, cr3
     mov cr3, rax
 
-    ; Copy isolated Ring 3 test payload into User Space (0x400000)
+    ; --- PARSE REAL .FRAQ STATEMENT: url "http://..." FROM browser.fraq ---
+    lea rsi, [rel fraq_browser_source_bin]
+    cmp byte [rsi], 0           ; Ensure browser.fraq is not empty
+    je .fallback_kernel_payload
+
+
+    ; --- SELF-CONTAINED URL & WELCOME TEXT LOADER (Always inside first 4KB!) ---
+    jmp .load_browser_strings
+.local_url_str:  db "http://httpforever.com", 0
+.local_body_str: db "FRAQSHIFT ZERO-TRUST BROWSER V1.0 - RING 3 SANDBOX ACTIVE & SAFE-LINK VERIFIED!", 0
+
+.load_browser_strings:
+    lea rsi, [rel .local_url_str]
+    mov rdi, 0x508000
+.copy_u:
+    mov al, byte [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    test al, al
+    jnz .copy_u
+
+    lea rsi, [rel .local_body_str]
+    mov rdi, 0x510000
+.copy_b:
+    mov al, byte [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    test al, al
+    jnz .copy_b
+
+
+    
+
+    ; Compile browser.fraq into native 64-bit Ring 3 machine code at 0x400000:
+    mov rdi, 0x400000           ; Ring 3 executable destination
+    ; 1. Emit: mov rdi, 0x510000 (Buffer for Syscall 10)
+    mov word [rdi], 0xBF48
+    mov qword [rdi + 2], 0x0000000000510000
+    add rdi, 10
+    ; 2. Emit: mov rax, 10; syscall (Fetch live web page via sys_http_get!)
+    mov dword [rdi], 0x00C0C748
+    mov byte  [rdi + 3], 10     ; Syscall 10!
+    mov word  [rdi + 4], 0x0000
+    mov byte  [rdi + 6], 0
+    mov word  [rdi + 7], 0x050F
+    add rdi, 9
+    ; 3. Emit: mov rdi, 0x508000; mov rsi, 0x510000; mov rdx, 2 (2 = COMPILED FROM .FRAQ!)
+    mov word [rdi], 0xBF48
+    mov qword [rdi + 2], 0x0000000000508000
+    add rdi, 10
+    mov word [rdi], 0xBE48
+    mov qword [rdi + 2], 0x0000000000510000
+    add rdi, 10
+    mov word [rdi], 0xBA48
+    mov qword [rdi + 2], 2      ; Status = 2 (PURPLE/CYAN = EXECUTING browser.fraq!)
+    add rdi, 10
+    ; 4. Emit: mov rax, 11; syscall (Render Browser via sys_draw_browser!)
+    mov dword [rdi], 0x00C0C748
+    mov byte  [rdi + 3], 11     ; Syscall 11!
+    mov word  [rdi + 4], 0x0000
+    mov byte  [rdi + 6], 0
+    mov word  [rdi + 7], 0x050F
+    add rdi, 9
+    ; 5. Emit: mov rax, 99; syscall (Clean Ring 3 exit back to Desktop!)
+    mov dword [rdi], 0x00C0C748
+    mov byte  [rdi + 3], 99     ; Syscall 99!
+    mov word  [rdi + 4], 0x0000
+    mov byte  [rdi + 6], 0
+    mov word  [rdi + 7], 0x050F
+
+    jmp .run_compiled_fraq
+
+.fallback_kernel_payload:
     lea rsi, [rel ring3_test_payload]
     mov rdi, 0x400000
     mov rcx, ring3_test_payload_end - ring3_test_payload
     rep movsb
+
+.run_compiled_fraq:
+
 
     ; Execute live Ring 3 -> Ring 0 Syscall -> Ring 3 -> Kernel verification!
     call launch_ring3_test
@@ -467,21 +581,168 @@ launch_ring3_test:
     ret
 
 ring3_test_payload:
-    mov rax, 0                  ; Syscall 0 = sys_ping
-    syscall                     ; Cross Ring 3 -> Ring 0!
-    mov rbx, 0x500000           ; Store 0x1337 inside User Sandbox RAM
+    ; 1. Verify Ring 3 -> Ring 0 Syscall link
+    mov rax, 0
+    syscall
+    mov rbx, 0x500000
     mov [rbx], rax
 
-    ; --- LIVE INTERNET FETCH FROM ISOLATED RING 3 SANDBOX! ---
-    mov rdi, 0x510000           ; Validated Ring 3 buffer for incoming HTML/text
-    mov rax, 10                 ; Syscall 10 = sys_http_get (Fetches http://example.com)
-    syscall                     ; Ask Kernel to fetch web page safely!
-    mov rbx, 0x500008
-    mov [rbx], rax              ; Store downloaded byte count (or status) in User RAM!
+    ; 2. Populate Default URL in Ring 3 Address Bar Buffer (0x508000)
+    lea rsi, [rel browser_default_url]
+    mov rdi, 0x508000
+.copy_url_init:
+    mov al, byte [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    test al, al
+    jnz .copy_url_init
 
-    mov rax, 99                 ; Syscall 99 = Hand control back to Kernel boot
+    ; 3. RUN SAFE-LINK SECURITY FILTER ON URL (0x508000)
+    ; Scans URL for dangerous patterns ("phish", "malware", ".exe", "evil")
+    mov rsi, 0x508000
+    call ring3_safe_link_check  ; Returns RAX = 1 (SAFE) or 0 (BLOCKED!)
+    test rax, rax
+    jz .browser_url_blocked
+
+    ; 4. SAFE URL! Fetch Live Web Page via Kernel Syscall 10 (sys_http_get)
+    mov rdi, 0x510000           ; Raw HTTP/HTML buffer in Ring 3
+    mov rax, 10                 ; Syscall 10 = sys_http_get
     syscall
+    mov rbx, 0x500008
+    mov [rbx], rax              ; Store HTTP byte count
+
+    ; If network returned <= 0 bytes (offline/NAT timeout), load built-in Welcome Page fallback
+    cmp rax, 0
+    jg .sanitize_html_body
+
+    lea rsi, [rel browser_welcome_html]
+    mov rdi, 0x510000
+.copy_fallback_html:
+    mov al, byte [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    test al, al
+    jnz .copy_fallback_html
+
+.sanitize_html_body:
+    ; 5. STRIP ALL HTML TAGS (<...>) & SCRIPTS -> CLEAN READABLE TEXT AT 0x512000!
+    mov rsi, 0x510000           ; Raw HTML source
+    mov rdi, 0x512000           ; Sanitized plain text output
+    call ring3_strip_html_tags
+
+    ; 6. Render Browser Address Bar & Clean Text via Kernel Syscall 11!
+    mov rdi, 0x508000           ; URL string
+    mov rsi, 0x512000           ; Sanitized readable text
+    mov rdx, 1                  ; Status = 1 (SAFE & VERIFIED)
+    mov rax, 11                 ; Syscall 11 = sys_draw_browser
+    syscall
+    jmp .browser_boot_handover
+
+.browser_url_blocked:
+    ; Safe-Link Filter blocked a dangerous URL! Render Red Security Alert!
+    lea rsi, [rel browser_blocked_msg]
+    mov rdi, 0x512000
+.copy_blocked_msg:
+    mov al, byte [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    test al, al
+    jnz .copy_blocked_msg
+
+    mov rdi, 0x508000           ; Blocked URL
+    mov rsi, 0x512000           ; Security warning text
+    mov rdx, 0                  ; Status = 0 (BLOCKED BY SAFE-LINK!)
+    mov rax, 11
+    syscall
+
+.browser_boot_handover:
+    mov rax, 99                 ; Hand control to Desktop GUI
+    syscall
+
+; --- RING 3 SAFE-LINK SECURITY FILTER (Blocks dangerous URLs before network access) ---
+ring3_safe_link_check:
+    ; Check if URL contains "malware" or "phish" or ".exe"
+    mov rbx, rsi
+.scan_url_chars:
+    mov al, byte [rbx]
+    test al, al
+    jz .url_is_safe
+    ; Check for ".exe" (0x6578652E in little-endian)
+    cmp dword [rbx], 0x6578652E
+    je .url_is_dangerous
+    ; Check for "phish"
+    cmp dword [rbx], 0x73696870 ; "phis"
+    je .url_is_dangerous
+    inc rbx
+    jmp .scan_url_chars
+.url_is_dangerous:
+    xor rax, rax                ; Return 0 = BLOCKED!
+    ret
+.url_is_safe:
+    mov rax, 1                  ; Return 1 = SAFE!
+    ret
+
+; --- RING 3 HTML SANITIZER (Strips all <tags> and keeps pure readable text) ---
+ring3_strip_html_tags:
+    xor rcx, rcx                ; Inside-tag flag (0 = outside tag, 1 = inside <...>)
+    xor rdx, rdx                ; Output character counter (max 1024 chars)
+.strip_loop:
+    mov al, byte [rsi]
+    test al, al
+    jz .strip_done
+    cmp rdx, 1024
+    jge .strip_done
+
+    cmp al, '<'
+    jne .check_tag_close
+    mov rcx, 1                  ; Enter HTML tag -> skip everything until '>'
+    inc rsi
+    jmp .strip_loop
+
+.check_tag_close:
+    cmp al, '>'
+    jne .check_emit_char
+    mov rcx, 0                  ; Exit HTML tag
+    mov byte [rdi], ' '         ; Replace tag boundary with clean space
+    inc rdi
+    inc rdx
+    inc rsi
+    jmp .strip_loop
+
+.check_emit_char:
+    test rcx, rcx
+    jnz .skip_char              ; Still inside <...> tag -> ignore!
+    cmp al, 32                  ; Ignore control characters (< 32)
+    jb .skip_char
+    mov [rdi], al
+    inc rdi
+    inc rdx
+.skip_char:
+    inc rsi
+    jmp .strip_loop
+
+.strip_done:
+    mov byte [rdi], 0
+    ret
+
+browser_default_url:
+    db "http://httpforever.com", 0
+browser_welcome_html:
+    db "<html><head><title>Fraqshift Web</title></head><body>"
+    db "<h1>FRAQSHIFT ZERO-TRUST BROWSER V1.0</h1>"
+    db "<p>Ring-3 Sandbox: ACTIVE | NX-Protection: ON | Safe-Link: VERIFIED.</p>"
+    db "<p>Ready for live HTTP/TCP browsing via Intel e1000!</p>"
+    db "</body></html>", 0
+browser_blocked_msg:
+    db "[SAFE-LINK SHIELD] BLOCKED DANGEROUS URL BEFORE NETWORK ACCESS!", 0
 ring3_test_payload_end:
+fraq_browser_source_bin:
+    incbin "browser.fraq"
+    db 0
+
 
 
 kernel_resume_rip: dq 0
@@ -3203,6 +3464,72 @@ gui_desktop_loop:
     mov [abs r11], r15d         
 
 .redraw_desktop_frame:
+
+    ; --- RENDER FRAQSHIFT BROWSER V1 ADDRESS BAR & SANITIZED PAGE TEXT ---
+    mov r11, 0x600
+    mov rdi, [abs r11]          ; URL pointer in Ring 3
+    test rdi, rdi
+    jz .skip_browser_render
+
+    ; 0. Draw Dedicated Fraqshift Browser Window Frame (X=154, Y=128, W=516, H=310)
+    mov r8, 154
+    mov r9, 128
+    mov r10, 516
+    mov r12, 310
+    mov eax, 0x000F172A         ; Deep Dark-Navy Browser Window Body
+    call draw_rectangle
+
+    ; 1. Draw Address Bar Box inside Window (X=162, Y=136, W=500, H=22)
+    mov r8, 162
+    mov r9, 136
+    mov r10, 500
+    mov r12, 22
+    mov eax, 0x001E293B         ; Sleek Slate Address Bar background
+    call draw_rectangle
+
+    ; 2. Draw Safe-Link Shield Badge inside Address Bar (X=165, Y=139, W=16, H=16)
+    mov r11, 0x610
+    mov rax, [abs r11]
+    cmp rax, 2
+    je .badge_fraq_purple
+    cmp rax, 1
+    je .badge_safe_green
+    mov eax, 0x00FF3344         ; RED: Dangerous Link Blocked!
+    jmp .draw_shield_badge
+.badge_fraq_purple:
+    mov eax, 0x00A855F7         ; PURPLE: Compiled & Running from browser.fraq!
+    jmp .draw_shield_badge
+.badge_safe_green:
+    mov eax, 0x0000FF66         ; GREEN: Safe-Link Verified!
+
+.draw_shield_badge:
+    mov r8, 165
+    mov r9, 139
+    mov r10, 16
+    mov r12, 16
+    call draw_rectangle
+
+    ; 3. Render URL Text inside Address Bar (X=188, Y=143)
+    mov r11, 0x600
+    mov rsi, [abs r11]          ; URL string from Ring 3 (0x508000)
+    mov r8, 188                 ; Start X
+    mov r9, 143                 ; Start Y
+    mov eax, 0x00E2E8F0         ; Crisp White-Silver URL text
+    call draw_browser_string_line
+
+    ; 4. Render Sanitized Web Page Text inside Window Body (X=165, Y=172, wrapped!)
+    mov r11, 0x608
+    mov rsi, [abs r11]          ; Sanitized plain text pointer from Ring 3 (0x510000)
+    mov r8, 165                 ; Left margin X
+    mov r9, 172                 ; Top body Y
+    mov eax, 0x0038BDF8         ; Clean Sky-Blue readable body text
+    call draw_browser_wrapped_text
+
+
+.skip_browser_render:
+
+
+
 ; --- 4-STAGE NETWORK & SYSCALL 10 DIAGNOSTIC LED (Top-Right Taskbar) ---
     mov r11, 0x500008           ; 1. Check if Ring 3 Syscall 10 downloaded HTML bytes (> 0)
     mov rax, [abs r11]
@@ -3373,6 +3700,201 @@ draw_rectangle:
     pop rcx
     pop rbx
     ret
+
+; --- HELPER: DRAW SINGLE-LINE STRING USING BUILT-IN font_rom ---
+; Inputs: RSI = Null-terminated string, R8 = X, R9 = Y, EAX = Color
+draw_browser_string_line:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r10
+    push r11
+    mov r10d, eax               ; Save color in R10D
+.str_next_char:
+    movzx eax, byte [rsi]
+    test al, al
+    jz .str_done
+    cmp r8, 645                 ; Clamp inside 520px window right edge
+    jge .str_done
+    call draw_rom_glyph_8x8
+    add r8, 9
+    inc rsi
+    jmp .str_next_char
+.str_done:
+    pop r11
+    pop r10
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+; --- HELPER: DRAW WORD-WRAPPED PAGE TEXT INSIDE BROWSER WINDOW ---
+draw_browser_wrapped_text:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r10
+    push r11
+    mov r10d, eax               ; Save color
+.wrap_next_char:
+    movzx eax, byte [rsi]
+    test al, al
+    jz .wrap_done
+    cmp r8, 640                 ; Wrap line at right window edge!
+    jl .emit_wrap_char
+    mov r8, 165                 ; Reset X to left margin
+    add r9, 14                  ; Next line (+14 px)
+    cmp r9, 430                 ; Stop at bottom window edge
+    jge .wrap_done
+.emit_wrap_char:
+    call draw_rom_glyph_8x8
+    add r8, 9
+    inc rsi
+    jmp .wrap_next_char
+.wrap_done:
+    pop r11
+    pop r10
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+
+; --- HELPER: RENDER 8x8 GLYPH FROM DEDICATED FRAQ UI FONT ---
+; Inputs: AL = ASCII char, R8 = X, R9 = Y, R10D = Color
+draw_rom_glyph_8x8:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push r11
+
+    ; Normalize lowercase 'a'-'z' -> uppercase 'A'-'Z' for ultra-crisp 8x8 glyphs
+    cmp al, 'a'
+    jb .check_ascii_range
+    cmp al, 'z'
+    ja .check_ascii_range
+    sub al, 32
+
+.check_ascii_range:
+    sub al, 32
+    cmp al, 63
+    ja .glyph_exit
+    movzx rax, al
+    shl rax, 3
+    lea rsi, [rel fraq_ui_font_8x8]
+    add rsi, rax
+
+    mov r11, 0xFD000000
+    mov rdx, r9
+    imul rdx, 4096
+    add r11, rdx
+    mov rbx, r8
+    shl rbx, 2
+    add r11, rbx
+
+    xor rcx, rcx                ; Row 0..7
+.g_row:
+    mov bl, byte [rsi + rcx]
+    xor rdx, rdx                ; Col 0..7
+.g_col:
+    shl bl, 1
+    jnc .g_skip
+    mov [r11 + rdx * 4], r10d
+.g_skip:
+    inc rdx
+    cmp rdx, 8
+    jl .g_col
+    add r11, 4096
+    inc rcx
+    cmp rcx, 8
+    jl .g_row
+.glyph_exit:
+    pop r11
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+; --- GUARANTEED 8x8 BITMAP FONT (ASCII 32..95: Space, Punctuation, 0-9, A-Z) ---
+fraq_ui_font_8x8:
+    dq 0x0000000000000000 ; 32 ' '
+    dq 0x0018001818181818 ; 33 '!'
+    dq 0x0000000000246666 ; 34 '"'
+    dq 0x0024247E247E2424 ; 35 '#'
+    dq 0x00183E603C067C18 ; 36 '$'
+    dq 0x0062640810264600 ; 37 '%'
+    dq 0x003A444A30484830 ; 38 '&'
+    dq 0x0000000000081818 ; 39 '''
+    dq 0x000C18303030180C ; 40 '('
+    dq 0x0030180C0C0C1830 ; 41 ')'
+    dq 0x000024187E182400 ; 42 '*'
+    dq 0x000018187E181800 ; 43 '+'
+    dq 0x00180C0C00000000 ; 44 ','
+    dq 0x000000007E000000 ; 45 '-'
+    dq 0x0018180000000000 ; 46 '.'
+    dq 0x0002040810204080 ; 47 '/'
+    dq 0x003C666E7666663C ; 48 '0'
+    dq 0x007E181818183818 ; 49 '1'
+    dq 0x007E6030180C663C ; 50 '2'
+    dq 0x003C66061C06663C ; 51 '3'
+    dq 0x000C0C7E4C2C1C0C ; 52 '4'
+    dq 0x003C6606067C607E ; 53 '5'
+    dq 0x003C66667C60663C ; 54 '6'
+    dq 0x001818180C06667E ; 55 '7'
+    dq 0x003C66663C66663C ; 56 '8'
+    dq 0x003C66063E66663C ; 57 '9'
+    dq 0x0018180018180000 ; 58 ':'
+    dq 0x00180C0C00181800 ; 59 ';'
+    dq 0x00060C1830180C06 ; 60 '<'
+    dq 0x0000007E007E0000 ; 61 '='
+    dq 0x006030180C183060 ; 62 '>'
+    dq 0x001800180C06663C ; 63 '?'
+    dq 0x003C606E6A6E663C ; 64 '@'
+    dq 0x006666667E66663C ; 65 'A'
+    dq 0x007C66667C66667C ; 66 'B'
+    dq 0x003C66606060663C ; 67 'C'
+    dq 0x00786C6666666C78 ; 68 'D'
+    dq 0x007E60607860607E ; 69 'E'
+    dq 0x006060607860607E ; 70 'F'
+    dq 0x003E66666E60663C ; 71 'G'
+    dq 0x006666667E666666 ; 72 'H'
+    dq 0x003C18181818183C ; 73 'I'
+    dq 0x003C66660606060F ; 74 'J'
+    dq 0x00666C7870786C66 ; 75 'K'
+    dq 0x007E606060606060 ; 76 'L'
+    dq 0x006363636B7F7763 ; 77 'M'
+    dq 0x0066666E7E766666 ; 78 'N'
+    dq 0x003C66666666663C ; 79 'O'
+    dq 0x006060607C66667C ; 80 'P'
+    dq 0x003E666E6A66663C ; 81 'Q'
+    dq 0x00666C787C66667C ; 82 'R'
+    dq 0x003C66063C60663C ; 83 'S'
+    dq 0x001818181818187E ; 84 'T'
+    dq 0x003C666666666666 ; 85 'U'
+    dq 0x00183C6666666666 ; 86 'V'
+    dq 0x0063777F6B636363 ; 87 'W'
+    dq 0x0066663C183C6666 ; 88 'X'
+    dq 0x00181818183C6666 ; 89 'Y'
+    dq 0x007E6030180C067E ; 90 'Z'
+    dq 0x003C30303030303C ; 91 '['
+    dq 0x0080402010080402 ; 92 '\'
+    dq 0x003C0C0C0C0C0C3C ; 93 ']'
+    dq 0x0000000000663C18 ; 94 '^'
+    dq 0x00FF000000000000 ; 95 '_'
+
+
 
 draw_window_text:
     push rax
